@@ -27,9 +27,11 @@ exports.login = async (req, res) => {
 
     await userService.updateLastLogin(user.id);
 
-    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, {
-      expiresIn: JWT_EXPIRES_IN
-    });
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role, company_id: user.company_id || null },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
 
     res.json({
       success: true,
@@ -39,6 +41,7 @@ exports.login = async (req, res) => {
           id: user.id,
           email: user.email,
           role: user.role,
+          company_id: user.company_id || null,
           is_active: user.is_active,
           employee_id: user.employee_id,
           rooms: (user.roomAssignments || []).map(ra => ({

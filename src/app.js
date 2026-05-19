@@ -20,6 +20,7 @@ app.use('/api/downtime', require('../routes/downtimeLog.route'));
 app.use('/api/downtime-products', require('../routes/downtimeProduct.route'));
 app.use('/api/users', require('../routes/user.route'));
 app.use('/api/auth', require('../routes/auth.route'));
+app.use('/api/settings', require('../routes/settings.route'));
 app.use('/api/data-retention', require('../routes/dataRetention.route'));
 app.use('/api/oee', require('../routes/oee.route'));
 
