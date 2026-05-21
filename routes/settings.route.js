@@ -7,14 +7,15 @@ const companyCtrl = require('../controllers/settings.company.controller');
 const roleCtrl = require('../controllers/settings.role.controller');
 const userCtrl = require('../controllers/settings.user.controller');
 
+// Companies — require login only (ไม่ต้องมี company_id เพื่อ setup ครั้งแรก)
+router.get('/companies', authMiddleware.authenticate, authMiddleware.authorizeRoles('super_admin'), companyCtrl.listCompanies);
+router.post('/companies', authMiddleware.authenticate, authMiddleware.authorizeRoles('super_admin'), companyCtrl.createCompany);
+router.put('/companies/:id', authMiddleware.authenticate, authMiddleware.authorizeRoles('super_admin'), companyCtrl.updateCompany);
+router.delete('/companies/:id', authMiddleware.authenticate, authMiddleware.authorizeRoles('super_admin'), companyCtrl.deleteCompany);
+
+// Roles & Users — require super_admin + must have company_id
 router.use(authMiddleware.authenticate);
 router.use(authMiddleware.authorizeRoles('super_admin'));
-
-// Companies
-router.get('/companies', companyCtrl.listCompanies);
-router.post('/companies', companyCtrl.createCompany);
-router.put('/companies/:id', companyCtrl.updateCompany);
-router.delete('/companies/:id', companyCtrl.deleteCompany);
 
 // Roles
 router.get('/roles', roleCtrl.listRoles);

@@ -7,7 +7,6 @@ const roleRepo = require('../repositories/settings.role.repo');
 const companyRepo = require('../repositories/settings.company.repo');
 const baseUserService = require('./user.service');
 
-const allowedRoles = ['super_admin', 'admin', 'operator', 'viewer', 'guest'];
 const allowedScopes = ['view', 'control', 'manage'];
 
 exports.listAll = (company_id) => {
@@ -19,11 +18,6 @@ exports.create = async (body, createdBy, company_id) => {
 
   if (!email || !password) {
     const err = new Error('email and password are required');
-    err.status = 400;
-    throw err;
-  }
-  if (!allowedRoles.includes(role)) {
-    const err = new Error(`role must be one of: ${allowedRoles.join(', ')}`);
     err.status = 400;
     throw err;
   }

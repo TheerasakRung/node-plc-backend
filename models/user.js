@@ -36,10 +36,7 @@ module.exports = (sequelize, DataTypes) => {
     },
     role: {
       type: DataTypes.STRING(20),
-      allowNull: false,
-      validate: {
-        isIn: [['super_admin', 'admin', 'operator', 'viewer', 'guest']]
-      }
+      allowNull: false
     },
     is_active: {
       type: DataTypes.BOOLEAN,
