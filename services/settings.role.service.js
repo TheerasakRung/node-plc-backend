@@ -2,23 +2,16 @@
 
 const repo = require('../repositories/settings.role.repo');
 
-const TAB_KEYS = ['dashboard', 'oee', 'products', 'devices', 'rooms', 'reports', 'settings'];
-const SCOPE_KEYS = ['view', 'edit', 'export'];
-
-function validateTabPermissions(tab_permissions) {
-  for (const key of TAB_KEYS) {
-    if (typeof tab_permissions[key] !== 'boolean') {
-      const err = new Error(`tab_permissions.${key} must be a boolean`);
-      err.status = 400;
-      throw err;
-    }
+// ตรวจว่าทุก value ใน object เป็น boolean — ไม่บังคับชื่อ key
+function validatePermissions(permissions, fieldName) {
+  if (typeof permissions !== 'object' || permissions === null || Array.isArray(permissions)) {
+    const err = new Error(`${fieldName} must be an object`);
+    err.status = 400;
+    throw err;
   }
-}
-
-function validateScopePermissions(scope_permissions) {
-  for (const key of SCOPE_KEYS) {
-    if (typeof scope_permissions[key] !== 'boolean') {
-      const err = new Error(`scope_permissions.${key} must be a boolean`);
+  for (const [key, val] of Object.entries(permissions)) {
+    if (typeof val !== 'boolean') {
+      const err = new Error(`${fieldName}.${key} must be a boolean`);
       err.status = 400;
       throw err;
     }
@@ -55,8 +48,8 @@ exports.create = async ({ name, tab_permissions, scope_permissions }, company_id
     err.status = 400;
     throw err;
   }
-  validateTabPermissions(tab_permissions);
-  validateScopePermissions(scope_permissions);
+  validatePermissions(tab_permissions, 'tab_permissions');
+  validatePermissions(scope_permissions, 'scope_permissions');
 
   const existing = await repo.findByName(name, company_id);
   if (existing) {
@@ -78,8 +71,8 @@ exports.update = async (id, { name, tab_permissions, scope_permissions, is_activ
       throw err;
     }
   }
-  if (tab_permissions) validateTabPermissions(tab_permissions);
-  if (scope_permissions) validateScopePermissions(scope_permissions);
+  if (tab_permissions) validatePermissions(tab_permissions, 'tab_permissions');
+  if (scope_permissions) validatePermissions(scope_permissions, 'scope_permissions');
 
   const updateData = {};
   if (name !== undefined) updateData.name = name;

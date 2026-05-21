@@ -1,6 +1,7 @@
 'use strict';
 
 const service = require('../services/settings.role.service');
+const { invalidateRoleCache } = require('../middleware/permission.middleware');
 
 function getCompanyId(req, res) {
   const company_id = req.user.company_id;
@@ -51,6 +52,7 @@ exports.updateRole = async (req, res) => {
     if (!company_id) return;
     const { name, tab_permissions, scope_permissions, is_active } = req.body;
     const role = await service.update(req.params.id, { name, tab_permissions, scope_permissions, is_active }, company_id);
+    invalidateRoleCache(Number(req.params.id));
     res.json({ success: true, data: role });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, message: err.message });
@@ -62,6 +64,7 @@ exports.deleteRole = async (req, res) => {
     const company_id = getCompanyId(req, res);
     if (!company_id) return;
     await service.delete(req.params.id, company_id);
+    invalidateRoleCache(Number(req.params.id));
     res.json({ success: true, message: 'Role deleted' });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, message: err.message });

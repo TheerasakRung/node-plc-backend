@@ -29,7 +29,13 @@ exports.login = async (req, res) => {
     await userService.updateLastLogin(user.id);
 
     const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role, company_id: user.company_id || null },
+      {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        role_id: user.role_id || null,
+        company_id: user.company_id || null
+      },
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES_IN }
     );
