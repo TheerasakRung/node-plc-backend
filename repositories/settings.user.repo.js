@@ -28,8 +28,8 @@ exports.findById = (id) => {
   });
 };
 
-exports.update = (id, data) => {
-  return User.update(data, { where: { id } });
+exports.update = (id, data, transaction) => {
+  return User.update(data, { where: { id }, transaction });
 };
 
 exports.delete = (id) => {

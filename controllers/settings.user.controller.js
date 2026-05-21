@@ -60,3 +60,26 @@ exports.deleteUser = async (req, res) => {
     res.status(err.status || 500).json({ success: false, message: err.message });
   }
 };
+
+exports.toggleActive = async (req, res) => {
+  try {
+    const company_id = getCompanyId(req, res);
+    if (!company_id) return;
+    const user = await service.toggleActive(req.params.id, company_id);
+    res.json({ success: true, data: user });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+
+exports.resetPassword = async (req, res) => {
+  try {
+    const company_id = getCompanyId(req, res);
+    if (!company_id) return;
+    const { password } = req.body;
+    await service.resetPassword(req.params.id, password, company_id);
+    res.json({ success: true, message: 'Password reset successfully' });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};

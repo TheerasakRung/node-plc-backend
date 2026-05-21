@@ -29,5 +29,7 @@ router.get('/users', userCtrl.listUsers);
 router.post('/users', userCtrl.createUser);
 router.put('/users/:id', userCtrl.updateUser);
 router.delete('/users/:id', userCtrl.deleteUser);
+router.patch('/users/:id/toggle-active', userCtrl.toggleActive);
+router.patch('/users/:id/reset-password', userCtrl.resetPassword);
 
 module.exports = router;

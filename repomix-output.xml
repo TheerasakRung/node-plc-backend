@@ -56,12 +56,16 @@ controllers/oee.controller.js
 controllers/plc.controller.js
 controllers/product.controller.js
 controllers/room.controller.js
+controllers/settings.company.controller.js
+controllers/settings.role.controller.js
+controllers/settings.user.controller.js
 controllers/user.controller.js
 controllers/workingTime.controller.js
 .env.development
 .env.production
 .gitattributes
 jobs/dailyOEEJob.js
+jobs/hourlyOEEJob.js
 middleware/auth.middleware.js
 migrations/20260511000001-create-working-time.js
 migrations/20260511000002-create-device-types.js
@@ -86,6 +90,14 @@ migrations/20260511000020-create-product-logs.js
 migrations/20260511000021-create-downtime-logs.js
 migrations/20260511000022-create-downtime-products.js
 migrations/20260511000023-create-oee-daily-snapshots.js
+migrations/20260513000001-add-target-fields-to-products.js
+migrations/20260514000024-create-oee-hourly-snapshots.js
+migrations/20260518000001-create-companies.js
+migrations/20260518000002-create-roles.js
+migrations/20260518000003-add-role-id-and-company-id-to-users.js
+migrations/20260518000004-add-company-id-to-roles.js
+migrations/20260518000005-remove-role-check-constraint.js
+models/company.js
 models/dashboardCard.js
 models/deviceAddress.js
 models/deviceAlarmEvent.js
@@ -104,8 +116,10 @@ models/index.js
 models/interactionElement.js
 models/interactionLayout.js
 models/oeeDailySnapshot.js
+models/oeeHourlySnapshot.js
 models/product.js
 models/productLog.js
+models/role.js
 models/room.js
 models/user.js
 models/userRoom.js
@@ -127,6 +141,9 @@ repositories/downtimeProduct.repo.js
 repositories/productLog.repo.js
 repositories/product.repo.js
 repositories/room.repo.js
+repositories/settings.company.repo.js
+repositories/settings.role.repo.js
+repositories/settings.user.repo.js
 repositories/user.repository.js
 repositories/userRoom.repo.js
 repositories/workingTime.repo.js
@@ -145,8 +162,10 @@ routes/oee.route.js
 routes/plc.route.js
 routes/product.route.js
 routes/room.route.js
+routes/settings.route.js
 routes/user.route.js
 routes/workingTime.route.js
+scripts/run-oee-now.js
 seeders/20260112051201-seed-working-time.js
 seeders/20260507000100-seed-super-admin-user.js
 services/cloudinary.service.js
@@ -164,6 +183,9 @@ services/oee.service.js
 services/productLog.service.js
 services/product.service.js
 services/room.service.js
+services/settings.company.service.js
+services/settings.role.service.js
+services/settings.user.service.js
 services/userRoom.service.js
 services/user.service.js
 services/workingTime.service.js
@@ -185,166 +207,6 @@ uploads/1776743542904.png
 
 <files>
 This section contains the contents of the repository's files.
-
-<file path="controllers/oee.controller.js">
-const oeeService = require('../services/oee.service');
-
-exports.triggerSnapshot = async (req, res) => {
-  const { date, current_time } = req.body;
-  try {
-    const results = await oeeService.generateDailyOEE(date, current_time);
-    res.json({ success: true, count: results.length, results });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-</file>
-
-<file path="jobs/dailyOEEJob.js">
-const cron = require('node-cron');
-const oeeService = require('../services/oee.service');
-
-function startDailyOEEJob() {
-  cron.schedule('55 23 * * *', async () => {
-    console.log('[Cron] บันทึก OEE Snapshot...');
-    try {
-      const results = await oeeService.generateDailyOEE();
-      console.log(`[Cron] OEE Snapshot บันทึกสำเร็จ (${results.length} products)`);
-    } catch (err) {
-      console.error('[Cron] OEE Snapshot ล้มเหลว:', err.message);
-    }
-  });
-
-  console.log('[Cron] Daily OEE Job registered (runs at 23:55 every day)');
-}
-
-module.exports = { startDailyOEEJob };
-</file>
-
-<file path="routes/oee.route.js">
-const express = require('express');
-const router = express.Router();
-const ctrl = require('../controllers/oee.controller');
-
-router.post('/snapshot', ctrl.triggerSnapshot);
-
-module.exports = router;
-</file>
-
-<file path="services/oee.service.js">
-const { Product, OeeDailySnapshot } = require('../models');
-const workingTimeService = require('./workingTime.service');
-const downtimeService = require('./downtimeProduct.service');
-
-exports.generateDailyOEE = async (dateStr, currentTime) => {
-  const today = dateStr || new Date().toISOString().split('T')[0];
-  const now = currentTime || new Date().toTimeString().slice(0, 5);
-
-  const products = await Product.findAll();
-  const results = [];
-
-  for (const product of products) {
-    const wtData = await workingTimeService.getPlannedProductionTime(today, now);
-    const planned_min = wtData.breakdown.elapsed_minutes || 0;
-
-    const downtimeSeconds = await downtimeService.calculateDowntime(
-      product.id,
-      `${today}T00:00:00.000Z`,
-      `${today}T23:59:59.999Z`
-    );
-    const downtime_min = downtimeSeconds / 60;
-
-    const operating_min = Math.max(0, planned_min - downtime_min);
-    const availability = planned_min > 0 ? (operating_min / planned_min * 100) : 0;
-    const performance = (operating_min > 0 && product.cycle_time > 0)
-      ? (product.cycle_time * product.total_output / operating_min * 100) : 0;
-    const good_count = Math.max(0, product.total_output - product.reject_output);
-    const quality = product.total_output > 0 ? (good_count / product.total_output * 100) : 0;
-    const oee = (availability * performance * quality / 10000);
-
-    await OeeDailySnapshot.upsert({
-      product_id: product.id,
-      snapshot_date: today,
-      oee,
-      availability,
-      performance,
-      quality,
-      total_output: product.total_output,
-      total_reject: product.reject_output,
-      downtime_min,
-      planned_min,
-      updated_at: new Date()
-    });
-
-    results.push({
-      product_id: product.id,
-      product_name: product.name,
-      oee: Math.round(oee * 100) / 100,
-      availability: Math.round(availability * 100) / 100,
-      performance: Math.round(performance * 100) / 100,
-      quality: Math.round(quality * 100) / 100,
-      planned_min,
-      downtime_min: Math.round(downtime_min * 100) / 100
-    });
-  }
-
-  return results;
-};
-</file>
-
-<file path="controllers/auth.controller.js">
-'use strict';
-
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const userService = require('../services/user.service');
-
-const JWT_SECRET = process.env.JWT_SECRET || 'ChangeThisSecretToAStrongValue';
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '8h';
-
-exports.login = async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({ success: false, message: 'email and password are required' });
-    }
-
-    const user = await userService.findByEmail(email);
-    if (!user || !user.is_active) {
-      return res.status(401).json({ success: false, message: 'Invalid credentials' });
-    }
-
-    const passwordMatches = await bcrypt.compare(password, user.password_hash);
-    if (!passwordMatches) {
-      return res.status(401).json({ success: false, message: 'Invalid credentials' });
-    }
-
-    await userService.updateLastLogin(user.id);
-
-    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, {
-      expiresIn: JWT_EXPIRES_IN
-    });
-
-    res.json({
-      success: true,
-      data: {
-        token,
-        user: {
-          id: user.id,
-          email: user.email,
-          role: user.role,
-          is_active: user.is_active,
-          employee_id: user.employee_id
-        }
-      }
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(err.status || 500).json({ success: false, message: err.message });
-  }
-};
-</file>
 
 <file path="controllers/dataRetention.controller.js">
 'use strict';
@@ -644,6 +506,215 @@ exports.delete = async (req, res) => {
 };
 </file>
 
+<file path="controllers/settings.company.controller.js">
+'use strict';
+
+const service = require('../services/settings.company.service');
+
+exports.listCompanies = async (req, res) => {
+  try {
+    const companies = await service.listAll();
+    res.json({ success: true, data: companies });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+
+exports.createCompany = async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name) {
+      return res.status(400).json({ success: false, message: 'name is required' });
+    }
+    const company = await service.create({ name });
+    res.status(201).json({ success: true, data: company });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+
+exports.updateCompany = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, is_active } = req.body;
+    const updated = await service.update(id, { name, is_active });
+    res.json({ success: true, data: updated });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+
+exports.deleteCompany = async (req, res) => {
+  try {
+    const { id } = req.params;
+    await service.delete(id);
+    res.json({ success: true, message: 'Company deleted' });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+</file>
+
+<file path="controllers/settings.role.controller.js">
+'use strict';
+
+const service = require('../services/settings.role.service');
+
+function getCompanyId(req, res) {
+  const company_id = req.user.company_id;
+  if (!company_id) {
+    res.status(400).json({ success: false, message: 'Your account is not assigned to a company. Please contact system administrator.' });
+    return null;
+  }
+  return company_id;
+}
+
+exports.listRoles = async (req, res) => {
+  try {
+    const company_id = getCompanyId(req, res);
+    if (!company_id) return;
+    const roles = await service.listAll(company_id);
+    res.json({ success: true, data: roles });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+
+exports.getRoleById = async (req, res) => {
+  try {
+    const company_id = getCompanyId(req, res);
+    if (!company_id) return;
+    const role = await service.findById(req.params.id, company_id);
+    res.json({ success: true, data: role });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+
+exports.createRole = async (req, res) => {
+  try {
+    const company_id = getCompanyId(req, res);
+    if (!company_id) return;
+    const { name, tab_permissions, scope_permissions } = req.body;
+    const role = await service.create({ name, tab_permissions, scope_permissions }, company_id);
+    res.status(201).json({ success: true, data: role });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+
+exports.updateRole = async (req, res) => {
+  try {
+    const company_id = getCompanyId(req, res);
+    if (!company_id) return;
+    const { name, tab_permissions, scope_permissions, is_active } = req.body;
+    const role = await service.update(req.params.id, { name, tab_permissions, scope_permissions, is_active }, company_id);
+    res.json({ success: true, data: role });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+
+exports.deleteRole = async (req, res) => {
+  try {
+    const company_id = getCompanyId(req, res);
+    if (!company_id) return;
+    await service.delete(req.params.id, company_id);
+    res.json({ success: true, message: 'Role deleted' });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+</file>
+
+<file path="controllers/settings.user.controller.js">
+'use strict';
+
+const service = require('../services/settings.user.service');
+
+function getCompanyId(req, res) {
+  const company_id = req.user.company_id;
+  if (!company_id) {
+    res.status(400).json({ success: false, message: 'Your account is not assigned to a company. Please contact system administrator.' });
+    return null;
+  }
+  return company_id;
+}
+
+exports.listUsers = async (req, res) => {
+  try {
+    const company_id = getCompanyId(req, res);
+    if (!company_id) return;
+    const users = await service.listAll(company_id);
+    res.json({ success: true, data: users });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+
+exports.createUser = async (req, res) => {
+  try {
+    const company_id = getCompanyId(req, res);
+    if (!company_id) return;
+    const user = await service.create(req.body, req.user.id, company_id);
+    res.status(201).json({ success: true, data: user });
+  } catch (err) {
+    if (err.name === 'SequelizeValidationError') {
+      return res.status(400).json({ success: false, message: err.errors.map(e => e.message).join(', ') });
+    }
+    if (err.name === 'SequelizeUniqueConstraintError') {
+      return res.status(409).json({ success: false, message: 'Email already in use' });
+    }
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+
+exports.updateUser = async (req, res) => {
+  try {
+    const company_id = getCompanyId(req, res);
+    if (!company_id) return;
+    const user = await service.update(req.params.id, req.body, company_id);
+    res.json({ success: true, data: user });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+
+exports.deleteUser = async (req, res) => {
+  try {
+    const company_id = getCompanyId(req, res);
+    if (!company_id) return;
+    await service.delete(req.params.id, company_id);
+    res.json({ success: true, message: 'User deleted' });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+
+exports.toggleActive = async (req, res) => {
+  try {
+    const company_id = getCompanyId(req, res);
+    if (!company_id) return;
+    const user = await service.toggleActive(req.params.id, company_id);
+    res.json({ success: true, data: user });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+
+exports.resetPassword = async (req, res) => {
+  try {
+    const company_id = getCompanyId(req, res);
+    if (!company_id) return;
+    const { password } = req.body;
+    await service.resetPassword(req.params.id, password, company_id);
+    res.json({ success: true, message: 'Password reset successfully' });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+</file>
+
 <file path="controllers/user.controller.js">
 'use strict';
 
@@ -734,6 +805,56 @@ exports.createUser = async (req, res) => {
 <file path=".gitattributes">
 # Auto detect text files and perform LF normalization
 * text=auto
+</file>
+
+<file path="jobs/dailyOEEJob.js">
+const cron = require('node-cron');
+const oeeService = require('../services/oee.service');
+
+function startDailyOEEJob() {
+  cron.schedule('55 23 * * *', async () => {
+    console.log('[Cron] บันทึก OEE Snapshot...');
+    try {
+      const results = await oeeService.generateDailyOEE();
+      console.log(`[Cron] OEE Snapshot บันทึกสำเร็จ (${results.length} products)`);
+    } catch (err) {
+      console.error('[Cron] OEE Snapshot ล้มเหลว:', err.message);
+    }
+  });
+
+  console.log('[Cron] Daily OEE Job registered (runs at 23:55 every day)');
+}
+
+module.exports = { startDailyOEEJob };
+</file>
+
+<file path="jobs/hourlyOEEJob.js">
+const cron = require('node-cron');
+const oeeService = require('../services/oee.service');
+
+function startHourlyOEEJob() {
+  cron.schedule('0 * * * *', async () => {
+    console.log('[Cron] บันทึก OEE Hourly Snapshot...');
+    try {
+      const localNow = new Date();
+      const dateStr = [
+        localNow.getFullYear(),
+        String(localNow.getMonth() + 1).padStart(2, '0'),
+        String(localNow.getDate()).padStart(2, '0')
+      ].join('-');
+      const hourStr = `${String(localNow.getHours()).padStart(2, '0')}:00`;
+
+      const results = await oeeService.generateHourlyOEE(dateStr, hourStr);
+      console.log(`[Cron] OEE Hourly Snapshot บันทึกสำเร็จ (${results.length} products) @ ${hourStr}`);
+    } catch (err) {
+      console.error('[Cron] OEE Hourly Snapshot ล้มเหลว:', err.message);
+    }
+  });
+
+  console.log('[Cron] Hourly OEE Job registered (runs at :00 every hour)');
+}
+
+module.exports = { startHourlyOEEJob };
 </file>
 
 <file path="middleware/auth.middleware.js">
@@ -2180,6 +2301,328 @@ module.exports = {
 };
 </file>
 
+<file path="migrations/20260513000001-add-target-fields-to-products.js">
+'use strict';
+
+module.exports = {
+  async up(queryInterface, Sequelize) {
+    await queryInterface.addColumn('products', 'target_oee', {
+      type: Sequelize.FLOAT,
+      allowNull: true,
+      defaultValue: null
+    });
+    await queryInterface.addColumn('products', 'target_output', {
+      type: Sequelize.INTEGER,
+      allowNull: true,
+      defaultValue: null
+    });
+  },
+
+  async down(queryInterface) {
+    await queryInterface.removeColumn('products', 'target_oee');
+    await queryInterface.removeColumn('products', 'target_output');
+  }
+};
+</file>
+
+<file path="migrations/20260514000024-create-oee-hourly-snapshots.js">
+'use strict';
+
+module.exports = {
+  async up(queryInterface, Sequelize) {
+    await queryInterface.createTable('oee_hourly_snapshots', {
+      id: {
+        type: Sequelize.INTEGER,
+        autoIncrement: true,
+        primaryKey: true,
+        allowNull: false
+      },
+      product_id: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+        references: { model: 'products', key: 'id' },
+        onUpdate: 'CASCADE',
+        onDelete: 'CASCADE'
+      },
+      snapshot_hour: {
+        type: Sequelize.DATE,
+        allowNull: false
+      },
+      oee: {
+        type: Sequelize.DECIMAL(5, 2),
+        allowNull: false,
+        defaultValue: 0
+      },
+      availability: {
+        type: Sequelize.DECIMAL(5, 2),
+        allowNull: false,
+        defaultValue: 0
+      },
+      performance: {
+        type: Sequelize.DECIMAL(5, 2),
+        allowNull: false,
+        defaultValue: 0
+      },
+      quality: {
+        type: Sequelize.DECIMAL(5, 2),
+        allowNull: false,
+        defaultValue: 0
+      },
+      total_output: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+        defaultValue: 0
+      },
+      total_reject: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+        defaultValue: 0
+      },
+      downtime_min: {
+        type: Sequelize.DECIMAL(8, 2),
+        allowNull: false,
+        defaultValue: 0
+      },
+      planned_min: {
+        type: Sequelize.DECIMAL(8, 2),
+        allowNull: false,
+        defaultValue: 0
+      },
+      created_at: {
+        type: Sequelize.DATE,
+        allowNull: false,
+        defaultValue: Sequelize.literal('CURRENT_TIMESTAMP')
+      },
+      updated_at: {
+        type: Sequelize.DATE,
+        allowNull: false,
+        defaultValue: Sequelize.literal('CURRENT_TIMESTAMP')
+      }
+    });
+
+    await queryInterface.addConstraint('oee_hourly_snapshots', {
+      fields: ['product_id', 'snapshot_hour'],
+      type: 'unique',
+      name: 'unique_product_hour'
+    });
+  },
+
+  async down(queryInterface) {
+    await queryInterface.dropTable('oee_hourly_snapshots');
+  }
+};
+</file>
+
+<file path="migrations/20260518000001-create-companies.js">
+'use strict';
+
+module.exports = {
+  async up(queryInterface, Sequelize) {
+    await queryInterface.createTable('companies', {
+      id: {
+        type: Sequelize.INTEGER,
+        autoIncrement: true,
+        primaryKey: true,
+        allowNull: false
+      },
+      name: {
+        type: Sequelize.STRING(255),
+        allowNull: false,
+        unique: true
+      },
+      is_active: {
+        type: Sequelize.BOOLEAN,
+        allowNull: false,
+        defaultValue: true
+      },
+      created_at: {
+        type: Sequelize.DATE,
+        allowNull: false,
+        defaultValue: Sequelize.literal('CURRENT_TIMESTAMP')
+      },
+      updated_at: {
+        type: Sequelize.DATE,
+        allowNull: false,
+        defaultValue: Sequelize.literal('CURRENT_TIMESTAMP')
+      }
+    });
+  },
+
+  async down(queryInterface) {
+    await queryInterface.dropTable('companies');
+  }
+};
+</file>
+
+<file path="migrations/20260518000002-create-roles.js">
+'use strict';
+
+module.exports = {
+  async up(queryInterface, Sequelize) {
+    await queryInterface.createTable('roles', {
+      id: {
+        type: Sequelize.INTEGER,
+        autoIncrement: true,
+        primaryKey: true,
+        allowNull: false
+      },
+      name: {
+        type: Sequelize.STRING(100),
+        allowNull: false,
+        unique: true
+      },
+      tab_permissions: {
+        type: Sequelize.JSONB,
+        allowNull: false,
+        defaultValue: {}
+      },
+      scope_permissions: {
+        type: Sequelize.JSONB,
+        allowNull: false,
+        defaultValue: {}
+      },
+      is_active: {
+        type: Sequelize.BOOLEAN,
+        allowNull: false,
+        defaultValue: true
+      },
+      created_at: {
+        type: Sequelize.DATE,
+        allowNull: false,
+        defaultValue: Sequelize.literal('CURRENT_TIMESTAMP')
+      },
+      updated_at: {
+        type: Sequelize.DATE,
+        allowNull: false,
+        defaultValue: Sequelize.literal('CURRENT_TIMESTAMP')
+      }
+    });
+  },
+
+  async down(queryInterface) {
+    await queryInterface.dropTable('roles');
+  }
+};
+</file>
+
+<file path="migrations/20260518000003-add-role-id-and-company-id-to-users.js">
+'use strict';
+
+module.exports = {
+  async up(queryInterface, Sequelize) {
+    await queryInterface.addColumn('users', 'role_id', {
+      type: Sequelize.INTEGER,
+      allowNull: true,
+      references: { model: 'roles', key: 'id' },
+      onUpdate: 'CASCADE',
+      onDelete: 'SET NULL'
+    });
+
+    await queryInterface.addColumn('users', 'company_id', {
+      type: Sequelize.INTEGER,
+      allowNull: true,
+      references: { model: 'companies', key: 'id' },
+      onUpdate: 'CASCADE',
+      onDelete: 'SET NULL'
+    });
+  },
+
+  async down(queryInterface) {
+    await queryInterface.removeColumn('users', 'company_id');
+    await queryInterface.removeColumn('users', 'role_id');
+  }
+};
+</file>
+
+<file path="migrations/20260518000004-add-company-id-to-roles.js">
+'use strict';
+
+module.exports = {
+  async up(queryInterface, Sequelize) {
+    await queryInterface.addColumn('roles', 'company_id', {
+      type: Sequelize.INTEGER,
+      allowNull: true,
+      references: { model: 'companies', key: 'id' },
+      onUpdate: 'CASCADE',
+      onDelete: 'SET NULL'
+    });
+  },
+
+  async down(queryInterface) {
+    await queryInterface.removeColumn('roles', 'company_id');
+  }
+};
+</file>
+
+<file path="migrations/20260518000005-remove-role-check-constraint.js">
+'use strict';
+
+module.exports = {
+  async up(queryInterface) {
+    await queryInterface.sequelize.query(
+      'ALTER TABLE users DROP CONSTRAINT IF EXISTS "users_role_check";'
+    );
+  },
+
+  async down(queryInterface) {
+    await queryInterface.sequelize.query(
+      `ALTER TABLE users ADD CONSTRAINT "users_role_check" CHECK (role IN ('super_admin', 'admin', 'operator', 'viewer', 'guest'));`
+    );
+  }
+};
+</file>
+
+<file path="models/company.js">
+'use strict';
+
+const { Model } = require('sequelize');
+
+module.exports = (sequelize, DataTypes) => {
+  class Company extends Model {
+    static associate(models) {
+      Company.hasMany(models.User, { foreignKey: 'company_id', as: 'users' });
+      Company.hasMany(models.Role, { foreignKey: 'company_id', as: 'roles' });
+    }
+  }
+
+  Company.init({
+    id: {
+      type: DataTypes.INTEGER,
+      autoIncrement: true,
+      primaryKey: true,
+      allowNull: false
+    },
+    name: {
+      type: DataTypes.STRING(255),
+      allowNull: false,
+      unique: true
+    },
+    is_active: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true
+    },
+    created_at: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW
+    },
+    updated_at: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW
+    }
+  }, {
+    sequelize,
+    modelName: 'Company',
+    tableName: 'companies',
+    timestamps: false
+  });
+
+  return Company;
+};
+</file>
+
 <file path="models/dashboardCard.js">
 module.exports = (sequelize, DataTypes) => {
   const DashboardCard = sequelize.define('DashboardCard', {
@@ -2713,64 +3156,75 @@ module.exports = (sequelize, DataTypes) => {
 };
 </file>
 
-<file path="models/user.js">
+<file path="models/oeeHourlySnapshot.js">
 'use strict';
 
 const { Model } = require('sequelize');
 
 module.exports = (sequelize, DataTypes) => {
-  class User extends Model {
+  class OeeHourlySnapshot extends Model {
     static associate(models) {
-      User.belongsTo(models.Employee, { foreignKey: 'employee_id', as: 'employee' });
-      User.belongsTo(models.User, { foreignKey: 'created_by', as: 'createdBy' });
-      User.hasMany(models.User, { foreignKey: 'created_by', as: 'createdUsers' });
-      User.hasMany(models.UserRoom, { foreignKey: 'user_id', as: 'roomAssignments', onDelete: 'CASCADE' });
-      User.hasMany(models.UserRoom, { foreignKey: 'assigned_by', as: 'assignedRooms' });
+      OeeHourlySnapshot.belongsTo(models.Product, {
+        foreignKey: 'product_id',
+        as: 'product'
+      });
     }
   }
 
-  User.init({
+  OeeHourlySnapshot.init({
     id: {
       type: DataTypes.INTEGER,
       autoIncrement: true,
       primaryKey: true,
       allowNull: false
     },
-    email: {
-      type: DataTypes.STRING(255),
-      allowNull: false,
-      unique: true,
-      validate: {
-        isEmail: true
-      }
-    },
-    password_hash: {
-      type: DataTypes.TEXT,
+    product_id: {
+      type: DataTypes.INTEGER,
       allowNull: false
     },
-    role: {
-      type: DataTypes.STRING(20),
-      allowNull: false,
-      validate: {
-        isIn: [['super_admin', 'admin', 'operator', 'viewer', 'guest']]
-      }
-    },
-    is_active: {
-      type: DataTypes.BOOLEAN,
-      allowNull: false,
-      defaultValue: true
-    },
-    employee_id: {
-      type: DataTypes.INTEGER,
-      allowNull: true
-    },
-    created_by: {
-      type: DataTypes.INTEGER,
-      allowNull: true
-    },
-    last_login_at: {
+    snapshot_hour: {
       type: DataTypes.DATE,
-      allowNull: true
+      allowNull: false
+    },
+    oee: {
+      type: DataTypes.DECIMAL(5, 2),
+      allowNull: false,
+      defaultValue: 0
+    },
+    availability: {
+      type: DataTypes.DECIMAL(5, 2),
+      allowNull: false,
+      defaultValue: 0
+    },
+    performance: {
+      type: DataTypes.DECIMAL(5, 2),
+      allowNull: false,
+      defaultValue: 0
+    },
+    quality: {
+      type: DataTypes.DECIMAL(5, 2),
+      allowNull: false,
+      defaultValue: 0
+    },
+    total_output: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0
+    },
+    total_reject: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0
+    },
+    downtime_min: {
+      type: DataTypes.DECIMAL(8, 2),
+      allowNull: false,
+      defaultValue: 0
+    },
+    planned_min: {
+      type: DataTypes.DECIMAL(8, 2),
+      allowNull: false,
+      defaultValue: 0
     },
     created_at: {
       type: DataTypes.DATE,
@@ -2784,12 +3238,84 @@ module.exports = (sequelize, DataTypes) => {
     }
   }, {
     sequelize,
-    modelName: 'User',
-    tableName: 'users',
+    modelName: 'OeeHourlySnapshot',
+    tableName: 'oee_hourly_snapshots',
+    timestamps: false,
+    indexes: [
+      {
+        unique: true,
+        fields: ['product_id', 'snapshot_hour'],
+        name: 'unique_product_hour'
+      }
+    ]
+  });
+
+  return OeeHourlySnapshot;
+};
+</file>
+
+<file path="models/role.js">
+'use strict';
+
+const { Model } = require('sequelize');
+
+module.exports = (sequelize, DataTypes) => {
+  class Role extends Model {
+    static associate(models) {
+      Role.hasMany(models.User, { foreignKey: 'role_id', as: 'users' });
+      Role.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company' });
+    }
+  }
+
+  Role.init({
+    id: {
+      type: DataTypes.INTEGER,
+      autoIncrement: true,
+      primaryKey: true,
+      allowNull: false
+    },
+    name: {
+      type: DataTypes.STRING(100),
+      allowNull: false,
+      unique: true
+    },
+    tab_permissions: {
+      type: DataTypes.JSONB,
+      allowNull: false,
+      defaultValue: {}
+    },
+    scope_permissions: {
+      type: DataTypes.JSONB,
+      allowNull: false,
+      defaultValue: {}
+    },
+    company_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    is_active: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true
+    },
+    created_at: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW
+    },
+    updated_at: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW
+    }
+  }, {
+    sequelize,
+    modelName: 'Role',
+    tableName: 'roles',
     timestamps: false
   });
 
-  return User;
+  return Role;
 };
 </file>
 
@@ -3055,25 +3581,114 @@ exports.delete = (id) => {
 };
 </file>
 
-<file path="repositories/user.repository.js">
+<file path="repositories/settings.company.repo.js">
 'use strict';
 
-const { User } = require('../models');
+const { Company, User } = require('../models');
 
-exports.findByEmail = (email) => {
-  return User.findOne({ where: { email } });
+exports.findAll = () => {
+  return Company.findAll({ order: [['name', 'ASC']] });
 };
 
 exports.findById = (id) => {
-  return User.findByPk(id);
+  return Company.findByPk(id);
+};
+
+exports.findByName = (name) => {
+  return Company.findOne({ where: { name } });
 };
 
 exports.create = (data) => {
-  return User.create(data);
+  return Company.create(data);
 };
 
 exports.update = (id, data) => {
-  return User.update(data, { where: { id } });
+  return Company.update(data, { where: { id } });
+};
+
+exports.delete = (id) => {
+  return Company.destroy({ where: { id } });
+};
+
+exports.countUsers = (company_id) => {
+  return User.count({ where: { company_id } });
+};
+</file>
+
+<file path="repositories/settings.role.repo.js">
+'use strict';
+
+const { Role, User } = require('../models');
+
+exports.findAll = (company_id) => {
+  return Role.findAll({
+    where: { company_id },
+    order: [['name', 'ASC']]
+  });
+};
+
+exports.findById = (id) => {
+  return Role.findByPk(id);
+};
+
+exports.findByName = (name, company_id) => {
+  return Role.findOne({ where: { name, company_id } });
+};
+
+exports.create = (data) => {
+  return Role.create(data);
+};
+
+exports.update = (id, data) => {
+  return Role.update(data, { where: { id } });
+};
+
+exports.delete = (id) => {
+  return Role.destroy({ where: { id } });
+};
+
+exports.countUsers = (role_id) => {
+  return User.count({ where: { role_id } });
+};
+</file>
+
+<file path="repositories/settings.user.repo.js">
+'use strict';
+
+const { User, UserRoom, Room, Role, Company } = require('../models');
+
+const defaultIncludes = [
+  { model: Role, as: 'customRole', attributes: ['id', 'name', 'tab_permissions', 'scope_permissions'] },
+  { model: Company, as: 'company', attributes: ['id', 'name'] },
+  {
+    model: UserRoom,
+    as: 'roomAssignments',
+    include: [{ model: Room, as: 'room', attributes: ['id', 'name'] }]
+  }
+];
+
+exports.findAll = (company_id) => {
+  return User.findAll({
+    where: { company_id },
+    attributes: { exclude: ['password_hash'] },
+    include: defaultIncludes,
+    order: [['created_at', 'DESC']]
+  });
+};
+
+exports.findById = (id) => {
+  return User.findByPk(id, {
+    attributes: { exclude: ['password_hash'] },
+    include: defaultIncludes
+  });
+};
+
+exports.update = (id, data, transaction) => {
+  return User.update(data, { where: { id }, transaction });
+};
+
+exports.delete = (id) => {
+  return User.destroy({ where: { id } });
 };
 </file>
 
@@ -3131,8 +3746,10 @@ exports.upsert = async (data) => {
 const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/auth.controller');
+const authMiddleware = require('../middleware/auth.middleware');
 
 router.post('/login', authController.login);
+router.put('/change-password', authMiddleware.authenticate, authController.changePassword);
 
 module.exports = router;
 </file>
@@ -3230,6 +3847,26 @@ router.post(
 );
 
 module.exports = router;
+</file>
+
+<file path="scripts/run-oee-now.js">
+require('../config/config');
+const oeeService = require('../services/oee.service');
+
+const date = process.argv[2] || new Date().toISOString().split('T')[0];
+const time = process.argv[3] || new Date().toTimeString().slice(0, 5);
+
+console.log(`Running OEE snapshot for ${date} ${time} ...`);
+
+oeeService.generateDailyOEE(date, time)
+  .then(results => {
+    console.log('Done:', JSON.stringify(results, null, 2));
+    process.exit(0);
+  })
+  .catch(err => {
+    console.error('Error:', err.message);
+    process.exit(1);
+  });
 </file>
 
 <file path="seeders/20260112051201-seed-working-time.js">
@@ -3679,6 +4316,168 @@ exports.delete = async (id) => {
 
   await roomRepo.delete(id);
   return { success: true, message: 'Room deleted' };
+};
+</file>
+
+<file path="services/settings.company.service.js">
+'use strict';
+
+const repo = require('../repositories/settings.company.repo');
+
+exports.listAll = () => {
+  return repo.findAll();
+};
+
+exports.create = async (data) => {
+  const existing = await repo.findByName(data.name);
+  if (existing) {
+    const err = new Error('Company name already in use');
+    err.status = 409;
+    throw err;
+  }
+  return repo.create(data);
+};
+
+exports.update = async (id, data) => {
+  const company = await repo.findById(id);
+  if (!company) {
+    const err = new Error('Company not found');
+    err.status = 404;
+    throw err;
+  }
+  if (data.name && data.name !== company.name) {
+    const existing = await repo.findByName(data.name);
+    if (existing) {
+      const err = new Error('Company name already in use');
+      err.status = 409;
+      throw err;
+    }
+  }
+  await repo.update(id, data);
+  return repo.findById(id);
+};
+
+exports.delete = async (id) => {
+  const company = await repo.findById(id);
+  if (!company) {
+    const err = new Error('Company not found');
+    err.status = 404;
+    throw err;
+  }
+  const userCount = await repo.countUsers(id);
+  if (userCount > 0) {
+    const err = new Error(`Cannot delete: ${userCount} user(s) are assigned to this company`);
+    err.status = 409;
+    throw err;
+  }
+  await repo.delete(id);
+};
+</file>
+
+<file path="services/settings.role.service.js">
+'use strict';
+
+const repo = require('../repositories/settings.role.repo');
+
+const TAB_KEYS = ['dashboard', 'oee', 'products', 'devices', 'rooms', 'reports', 'settings'];
+const SCOPE_KEYS = ['view', 'edit', 'export'];
+
+function validateTabPermissions(tab_permissions) {
+  for (const key of TAB_KEYS) {
+    if (typeof tab_permissions[key] !== 'boolean') {
+      const err = new Error(`tab_permissions.${key} must be a boolean`);
+      err.status = 400;
+      throw err;
+    }
+  }
+}
+
+function validateScopePermissions(scope_permissions) {
+  for (const key of SCOPE_KEYS) {
+    if (typeof scope_permissions[key] !== 'boolean') {
+      const err = new Error(`scope_permissions.${key} must be a boolean`);
+      err.status = 400;
+      throw err;
+    }
+  }
+}
+
+exports.listAll = (company_id) => {
+  return repo.findAll(company_id);
+};
+
+exports.findById = async (id, company_id) => {
+  const role = await repo.findById(id);
+  if (!role) {
+    const err = new Error('Role not found');
+    err.status = 404;
+    throw err;
+  }
+  if (role.company_id !== company_id) {
+    const err = new Error('Role not found');
+    err.status = 404;
+    throw err;
+  }
+  return role;
+};
+
+exports.create = async ({ name, tab_permissions, scope_permissions }, company_id) => {
+  if (!name) {
+    const err = new Error('name is required');
+    err.status = 400;
+    throw err;
+  }
+  if (!tab_permissions || !scope_permissions) {
+    const err = new Error('tab_permissions and scope_permissions are required');
+    err.status = 400;
+    throw err;
+  }
+  validateTabPermissions(tab_permissions);
+  validateScopePermissions(scope_permissions);
+
+  const existing = await repo.findByName(name, company_id);
+  if (existing) {
+    const err = new Error('Role name already in use');
+    err.status = 409;
+    throw err;
+  }
+  return repo.create({ name, tab_permissions, scope_permissions, company_id });
+};
+
+exports.update = async (id, { name, tab_permissions, scope_permissions, is_active }, company_id) => {
+  const role = await exports.findById(id, company_id);
+
+  if (name && name !== role.name) {
+    const existing = await repo.findByName(name, company_id);
+    if (existing) {
+      const err = new Error('Role name already in use');
+      err.status = 409;
+      throw err;
+    }
+  }
+  if (tab_permissions) validateTabPermissions(tab_permissions);
+  if (scope_permissions) validateScopePermissions(scope_permissions);
+
+  const updateData = {};
+  if (name !== undefined) updateData.name = name;
+  if (tab_permissions !== undefined) updateData.tab_permissions = tab_permissions;
+  if (scope_permissions !== undefined) updateData.scope_permissions = scope_permissions;
+  if (is_active !== undefined) updateData.is_active = is_active;
+
+  await repo.update(id, updateData);
+  return repo.findById(id);
+};
+
+exports.delete = async (id, company_id) => {
+  await exports.findById(id, company_id);
+
+  const userCount = await repo.countUsers(id);
+  if (userCount > 0) {
+    const err = new Error(`Cannot delete: ${userCount} user(s) are assigned to this role`);
+    err.status = 409;
+    throw err;
+  }
+  await repo.delete(id);
 };
 </file>
 
@@ -4623,6 +5422,47 @@ You can create a Postman collection with these requests:
    - URL: `{{baseUrl}}/alarms/:alarmId`
 </file>
 
+<file path="repositories/user.repository.js">
+'use strict';
+
+const { User, UserRoom, Room, Role, Company } = require('../models');
+
+exports.findByEmail = (email) => {
+  return User.findOne({
+    where: { email },
+    include: [
+      {
+        model: UserRoom,
+        as: 'roomAssignments',
+        include: [{ model: Room, as: 'room', attributes: ['id', 'name'] }]
+      },
+      {
+        model: Role,
+        as: 'customRole',
+        attributes: ['id', 'name', 'tab_permissions', 'scope_permissions']
+      },
+      {
+        model: Company,
+        as: 'company',
+        attributes: ['id', 'name']
+      }
+    ]
+  });
+};
+
+exports.findById = (id) => {
+  return User.findByPk(id);
+};
+
+exports.create = (data) => {
+  return User.create(data);
+};
+
+exports.update = (id, data) => {
+  return User.update(data, { where: { id } });
+};
+</file>
+
 <file path="routes/plc.route.js">
 const express = require('express');
 const router = express.Router();
@@ -4631,6 +5471,44 @@ const controller = require('../controllers/plc.controller');
 router.get('/status', controller.status);
 router.get('/read', controller.read);
 router.post('/write', controller.write);
+
+module.exports = router;
+</file>
+
+<file path="routes/settings.route.js">
+'use strict';
+
+const express = require('express');
+const router = express.Router();
+const authMiddleware = require('../middleware/auth.middleware');
+const companyCtrl = require('../controllers/settings.company.controller');
+const roleCtrl = require('../controllers/settings.role.controller');
+const userCtrl = require('../controllers/settings.user.controller');
+
+// Companies — require login only (ไม่ต้องมี company_id เพื่อ setup ครั้งแรก)
+router.get('/companies', authMiddleware.authenticate, authMiddleware.authorizeRoles('super_admin'), companyCtrl.listCompanies);
+router.post('/companies', authMiddleware.authenticate, authMiddleware.authorizeRoles('super_admin'), companyCtrl.createCompany);
+router.put('/companies/:id', authMiddleware.authenticate, authMiddleware.authorizeRoles('super_admin'), companyCtrl.updateCompany);
+router.delete('/companies/:id', authMiddleware.authenticate, authMiddleware.authorizeRoles('super_admin'), companyCtrl.deleteCompany);
+
+// Roles & Users — require super_admin + must have company_id
+router.use(authMiddleware.authenticate);
+router.use(authMiddleware.authorizeRoles('super_admin'));
+
+// Roles
+router.get('/roles', roleCtrl.listRoles);
+router.get('/roles/:id', roleCtrl.getRoleById);
+router.post('/roles', roleCtrl.createRole);
+router.put('/roles/:id', roleCtrl.updateRole);
+router.delete('/roles/:id', roleCtrl.deleteRole);
+
+// Users
+router.get('/users', userCtrl.listUsers);
+router.post('/users', userCtrl.createUser);
+router.put('/users/:id', userCtrl.updateUser);
+router.delete('/users/:id', userCtrl.deleteUser);
+router.patch('/users/:id/toggle-active', userCtrl.toggleActive);
+router.patch('/users/:id/reset-password', userCtrl.resetPassword);
 
 module.exports = router;
 </file>
@@ -4764,6 +5642,208 @@ exports.createElement = async (data) => {
 };
 </file>
 
+<file path="services/settings.user.service.js">
+'use strict';
+
+const bcrypt = require('bcryptjs');
+const { User, UserRoom } = require('../models');
+const userRepo = require('../repositories/settings.user.repo');
+const roleRepo = require('../repositories/settings.role.repo');
+const companyRepo = require('../repositories/settings.company.repo');
+const baseUserService = require('./user.service');
+
+const allowedScopes = ['view', 'control', 'manage'];
+
+exports.listAll = (company_id) => {
+  return userRepo.findAll(company_id);
+};
+
+exports.create = async (body, createdBy, company_id) => {
+  const { email, password, role = 'operator', role_id, employee_id, is_active, rooms } = body;
+
+  if (!email || !password) {
+    const err = new Error('email and password are required');
+    err.status = 400;
+    throw err;
+  }
+  if (rooms && Array.isArray(rooms)) {
+    for (const room of rooms) {
+      if (room.scope && !allowedScopes.includes(room.scope)) {
+        const err = new Error(`scope must be one of: ${allowedScopes.join(', ')}`);
+        err.status = 400;
+        throw err;
+      }
+    }
+  }
+  if (role_id) {
+    const roleRecord = await roleRepo.findById(role_id);
+    if (!roleRecord || roleRecord.company_id !== company_id) {
+      const err = new Error('role_id not found');
+      err.status = 400;
+      throw err;
+    }
+  }
+
+  const existing = await baseUserService.findByEmail(email);
+  if (existing) {
+    const err = new Error('Email already in use');
+    err.status = 409;
+    throw err;
+  }
+
+  const password_hash = await bcrypt.hash(password, 10);
+  const userData = {
+    email,
+    password_hash,
+    role,
+    role_id: role_id || null,
+    company_id,
+    employee_id: employee_id || null,
+    is_active: typeof is_active === 'boolean' ? is_active : true,
+    created_by: createdBy || null
+  };
+
+  const roomAssignments = Array.isArray(rooms) ? rooms : [];
+  const user = await createWithRoomAssignment(userData, roomAssignments);
+  return userRepo.findById(user.id);
+};
+
+async function createWithRoomAssignment(userData, roomAssignments) {
+  const transaction = await User.sequelize.transaction();
+  try {
+    const user = await User.create(userData, { transaction });
+    if (roomAssignments.length > 0) {
+      const roomData = roomAssignments.map(r => ({
+        user_id: user.id,
+        room_id: r.room_id,
+        scope: r.scope || 'view',
+        assigned_by: userData.created_by || null
+      }));
+      await UserRoom.bulkCreate(roomData, { transaction });
+    }
+    await transaction.commit();
+    return user;
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
+}
+
+exports.update = async (id, data, company_id) => {
+  const user = await userRepo.findById(id);
+  if (!user) {
+    const err = new Error('User not found');
+    err.status = 404;
+    throw err;
+  }
+  if (user.company_id !== company_id) {
+    const err = new Error('User not found');
+    err.status = 404;
+    throw err;
+  }
+  if (data.role_id) {
+    const roleRecord = await roleRepo.findById(data.role_id);
+    if (!roleRecord || roleRecord.company_id !== company_id) {
+      const err = new Error('role_id not found');
+      err.status = 400;
+      throw err;
+    }
+  }
+  if (data.rooms && Array.isArray(data.rooms)) {
+    for (const room of data.rooms) {
+      if (room.scope && !allowedScopes.includes(room.scope)) {
+        const err = new Error(`scope must be one of: ${allowedScopes.join(', ')}`);
+        err.status = 400;
+        throw err;
+      }
+    }
+  }
+
+  const allowed = ['role_id', 'is_active', 'role', 'employee_id'];
+  const updateData = {};
+  for (const key of allowed) {
+    if (data[key] !== undefined) updateData[key] = data[key];
+  }
+
+  const transaction = await User.sequelize.transaction();
+  try {
+    if (Object.keys(updateData).length > 0) {
+      await userRepo.update(id, updateData, transaction);
+    }
+    if (data.rooms !== undefined) {
+      await UserRoom.destroy({ where: { user_id: id }, transaction });
+      if (data.rooms.length > 0) {
+        const roomData = data.rooms.map(r => ({
+          user_id: id,
+          room_id: r.room_id,
+          scope: r.scope || 'view',
+          assigned_by: null
+        }));
+        await UserRoom.bulkCreate(roomData, { transaction });
+      }
+    }
+    await transaction.commit();
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
+
+  return userRepo.findById(id);
+};
+
+exports.delete = async (id, company_id) => {
+  const user = await userRepo.findById(id);
+  if (!user) {
+    const err = new Error('User not found');
+    err.status = 404;
+    throw err;
+  }
+  if (user.company_id !== company_id) {
+    const err = new Error('User not found');
+    err.status = 404;
+    throw err;
+  }
+  await userRepo.delete(id);
+};
+
+exports.toggleActive = async (id, company_id) => {
+  const user = await userRepo.findById(id);
+  if (!user) {
+    const err = new Error('User not found');
+    err.status = 404;
+    throw err;
+  }
+  if (user.company_id !== company_id) {
+    const err = new Error('User not found');
+    err.status = 404;
+    throw err;
+  }
+  await userRepo.update(id, { is_active: !user.is_active });
+  return userRepo.findById(id);
+};
+
+exports.resetPassword = async (id, newPassword, company_id) => {
+  const user = await userRepo.findById(id);
+  if (!user) {
+    const err = new Error('User not found');
+    err.status = 404;
+    throw err;
+  }
+  if (user.company_id !== company_id) {
+    const err = new Error('User not found');
+    err.status = 404;
+    throw err;
+  }
+  if (!newPassword || newPassword.length < 6) {
+    const err = new Error('password must be at least 6 characters');
+    err.status = 400;
+    throw err;
+  }
+  const password_hash = await bcrypt.hash(newPassword, 10);
+  await userRepo.update(id, { password_hash });
+};
+</file>
+
 <file path="test-email.js">
 'use strict';
 require('dotenv').config(); // โหลดค่าจาก .env
@@ -4812,6 +5892,167 @@ const transporter = nodemailer.createTransport({
 }
 
 testEmail();
+</file>
+
+<file path="controllers/auth.controller.js">
+'use strict';
+
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const userService = require('../services/user.service');
+const userRepo = require('../repositories/user.repository');
+
+const JWT_SECRET = process.env.JWT_SECRET || 'ChangeThisSecretToAStrongValue';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '8h';
+
+exports.login = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ success: false, message: 'email and password are required' });
+    }
+
+    const user = await userService.findByEmail(email);
+    if (!user || !user.is_active) {
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    }
+
+    const passwordMatches = await bcrypt.compare(password, user.password_hash);
+    if (!passwordMatches) {
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    }
+
+    await userService.updateLastLogin(user.id);
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role, company_id: user.company_id || null },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
+
+    const permissions = user.customRole
+      ? {
+          role_id: user.customRole.id,
+          role_name: user.customRole.name,
+          tab_permissions: user.customRole.tab_permissions,
+          scope_permissions: user.customRole.scope_permissions
+        }
+      : null;
+
+    res.json({
+      success: true,
+      data: {
+        token,
+        user: {
+          id: user.id,
+          email: user.email,
+          role: user.role,
+          company_id: user.company_id || null,
+          company: user.company ? { id: user.company.id, name: user.company.name } : null,
+          is_active: user.is_active,
+          employee_id: user.employee_id,
+          rooms: (user.roomAssignments || []).map(ra => ({
+            id: ra.room_id,
+            name: ra.room?.name,
+            scope: ra.scope
+          })),
+          permissions
+        }
+      }
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+
+exports.changePassword = async (req, res) => {
+  try {
+    const { current_password, new_password } = req.body;
+
+    if (!current_password || !new_password) {
+      return res.status(400).json({ success: false, message: 'current_password and new_password are required' });
+    }
+    if (new_password.length < 6) {
+      return res.status(400).json({ success: false, message: 'new_password must be at least 6 characters' });
+    }
+
+    const user = await userRepo.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const matches = await bcrypt.compare(current_password, user.password_hash);
+    if (!matches) {
+      return res.status(400).json({ success: false, message: 'current_password is incorrect' });
+    }
+
+    const password_hash = await bcrypt.hash(new_password, 10);
+    await userRepo.update(req.user.id, { password_hash });
+
+    res.json({ success: true, message: 'Password changed successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+};
+</file>
+
+<file path="controllers/oee.controller.js">
+const oeeService = require('../services/oee.service');
+
+exports.triggerSnapshot = async (req, res) => {
+  const { date, current_time } = req.body;
+  try {
+    const results = await oeeService.generateDailyOEE(date, current_time);
+    res.json({ success: true, count: results.length, results });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.triggerHourlySnapshot = async (req, res) => {
+  const { date, hour } = req.body;
+  try {
+    const results = await oeeService.generateHourlyOEE(date, hour);
+    res.json({ success: true, count: results.length, results });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.getIntradayHistory = async (req, res) => {
+  try {
+    const productId = parseInt(req.params.product_id, 10);
+    if (isNaN(productId)) {
+      return res.status(400).json({ success: false, message: 'product_id ไม่ถูกต้อง' });
+    }
+    const data = await oeeService.getIntradayHistory(productId, req.query.date || null);
+    res.json({ success: true, product_id: productId, date: req.query.date || null, data });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.getSnapshotHistory = async (req, res) => {
+  try {
+    const productId = parseInt(req.params.product_id, 10);
+    const days      = parseInt(req.query.days, 10) || 7;
+
+    if (isNaN(productId)) {
+      return res.status(400).json({ success: false, message: 'product_id ไม่ถูกต้อง' });
+    }
+    if (days !== 7 && days !== 30) {
+      return res.status(400).json({ success: false, message: 'days ต้องเป็น 7 หรือ 30' });
+    }
+
+    const data = await oeeService.getSnapshotHistory(productId, days);
+    res.json({ success: true, product_id: productId, days, data });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
 </file>
 
 <file path="controllers/product.controller.js">
@@ -5040,6 +6281,93 @@ module.exports = (sequelize, DataTypes) => {
 };
 </file>
 
+<file path="models/user.js">
+'use strict';
+
+const { Model } = require('sequelize');
+
+module.exports = (sequelize, DataTypes) => {
+  class User extends Model {
+    static associate(models) {
+      User.belongsTo(models.Employee, { foreignKey: 'employee_id', as: 'employee' });
+      User.belongsTo(models.User, { foreignKey: 'created_by', as: 'createdBy' });
+      User.hasMany(models.User, { foreignKey: 'created_by', as: 'createdUsers' });
+      User.hasMany(models.UserRoom, { foreignKey: 'user_id', as: 'roomAssignments', onDelete: 'CASCADE' });
+      User.hasMany(models.UserRoom, { foreignKey: 'assigned_by', as: 'assignedRooms' });
+      User.belongsTo(models.Role, { foreignKey: 'role_id', as: 'customRole' });
+      User.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company' });
+    }
+  }
+
+  User.init({
+    id: {
+      type: DataTypes.INTEGER,
+      autoIncrement: true,
+      primaryKey: true,
+      allowNull: false
+    },
+    email: {
+      type: DataTypes.STRING(255),
+      allowNull: false,
+      unique: true,
+      validate: {
+        isEmail: true
+      }
+    },
+    password_hash: {
+      type: DataTypes.TEXT,
+      allowNull: false
+    },
+    role: {
+      type: DataTypes.STRING(20),
+      allowNull: false
+    },
+    is_active: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true
+    },
+    employee_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    created_by: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    role_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    company_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    last_login_at: {
+      type: DataTypes.DATE,
+      allowNull: true
+    },
+    created_at: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW
+    },
+    updated_at: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW
+    }
+  }, {
+    sequelize,
+    modelName: 'User',
+    tableName: 'users',
+    timestamps: false
+  });
+
+  return User;
+};
+</file>
+
 <file path="poll.js">
 'use strict';
 
@@ -5066,6 +6394,19 @@ router.get('/cards', controller.getCards);
 router.post('/cards', controller.createCard);
 router.put('/cards/:id', controller.updateCard);
 router.delete('/cards/:id', controller.deleteCard);
+
+module.exports = router;
+</file>
+
+<file path="routes/oee.route.js">
+const express = require('express');
+const router = express.Router();
+const ctrl = require('../controllers/oee.controller');
+
+router.post('/snapshot', ctrl.triggerSnapshot);
+router.get('/snapshot/:product_id/history', ctrl.getSnapshotHistory);
+router.post('/hourly-snapshot', ctrl.triggerHourlySnapshot);
+router.get('/hourly-snapshot/:product_id/intraday', ctrl.getIntradayHistory);
 
 module.exports = router;
 </file>
@@ -5100,6 +6441,246 @@ router.get('/planned-production/range', controller.getPlannedProductionTimeRange
 router.get('/planned-production/current', controller.getCurrentPlannedTime);
 
 module.exports = router;
+</file>
+
+<file path="services/oee.service.js">
+const { Product, OeeDailySnapshot, OeeHourlySnapshot } = require('../models');
+const { Op } = require('sequelize');
+const workingTimeService = require('./workingTime.service');
+const downtimeService = require('./downtimeProduct.service');
+
+async function getTodayOutput(product, today) {
+  // total_output บน products table เป็น cumulative counter ไม่ reset รายวัน
+  // หาวันก่อนหน้า แล้วเอา total_output ณ วันนั้นมาลบ
+  const d = new Date(today);
+  d.setDate(d.getDate() - 1);
+  const yesterday = d.toISOString().split('T')[0];
+
+  const prevSnapshot = await OeeDailySnapshot.findOne({
+    where: { product_id: product.id, snapshot_date: yesterday }
+  });
+
+  const baseOutput = prevSnapshot ? Number(prevSnapshot.total_output) : 0;
+  const baseReject = prevSnapshot ? Number(prevSnapshot.total_reject) : 0;
+
+  return {
+    total_output: Math.max(0, product.total_output - baseOutput),
+    reject_output: Math.max(0, product.reject_output - baseReject)
+  };
+}
+
+exports.generateDailyOEE = async (dateStr, currentTime) => {
+  // ใช้ local date ไม่ใช่ UTC เพื่อ timezone ถูกต้อง
+  const localNow = new Date();
+  const today = dateStr || [
+    localNow.getFullYear(),
+    String(localNow.getMonth() + 1).padStart(2, '0'),
+    String(localNow.getDate()).padStart(2, '0')
+  ].join('-');
+  const now = currentTime || localNow.toTimeString().slice(0, 5);
+
+  // downtime query ใช้ local time (ไม่มี Z suffix) เพื่อ timezone ตรงกับ dashboard
+  const startOfDay = new Date(`${today}T00:00:00`);
+  const endOfDay   = new Date(`${today}T23:59:59`);
+
+  const products = await Product.findAll();
+  const results = [];
+
+  for (const product of products) {
+    const wtData = await workingTimeService.getPlannedProductionTime(today, now);
+    const planned_min = wtData.breakdown.elapsed_minutes || 0;
+
+    const downtimeSeconds = await downtimeService.calculateDowntime(
+      product.id,
+      startOfDay,
+      endOfDay
+    );
+    const downtime_min = downtimeSeconds / 60;
+
+    // ยอดผลิตวันนี้ (ลบ cumulative ของเมื่อวาน)
+    const { total_output, reject_output } = await getTodayOutput(product, today);
+
+    const operating_min  = Math.max(0, planned_min - downtime_min);
+    const availability   = planned_min > 0 ? (operating_min / planned_min * 100) : 0;
+    // cycle_time หน่วย วินาที → แปลง operating_min เป็น วินาที ด้วย *60
+    const performance    = (operating_min > 0 && product.cycle_time > 0)
+      ? (product.cycle_time * total_output / (operating_min * 60) * 100) : 0;
+    const good_count     = Math.max(0, total_output - reject_output);
+    const quality        = total_output > 0 ? (good_count / total_output * 100) : 0;
+    const oee            = (availability * performance * quality / 10000);
+
+    await OeeDailySnapshot.upsert({
+      product_id:    product.id,
+      snapshot_date: today,
+      oee,
+      availability,
+      performance,
+      quality,
+      total_output,
+      total_reject:  reject_output,
+      downtime_min,
+      planned_min,
+      updated_at:    new Date()
+    });
+
+    results.push({
+      product_id:   product.id,
+      product_name: product.name,
+      oee:          Math.round(oee * 100) / 100,
+      availability: Math.round(availability * 100) / 100,
+      performance:  Math.round(performance * 100) / 100,
+      quality:      Math.round(quality * 100) / 100,
+      total_output,
+      reject_output,
+      planned_min,
+      downtime_min: Math.round(downtime_min * 100) / 100
+    });
+  }
+
+  return results;
+};
+
+exports.generateHourlyOEE = async (dateStr, hourStr) => {
+  const localNow = new Date();
+  const today = dateStr || [
+    localNow.getFullYear(),
+    String(localNow.getMonth() + 1).padStart(2, '0'),
+    String(localNow.getDate()).padStart(2, '0')
+  ].join('-');
+  const now = hourStr || `${String(localNow.getHours()).padStart(2, '0')}:00`;
+
+  const startOfDay       = new Date(`${today}T00:00:00`);
+  const endOfCurrentHour = new Date(`${today}T${now}:00`);
+
+  const products = await Product.findAll();
+  const results  = [];
+
+  for (const product of products) {
+    const wtData      = await workingTimeService.getPlannedProductionTime(today, now);
+    const planned_min = wtData.breakdown.elapsed_minutes || 0;
+
+    const downtimeSeconds = await downtimeService.calculateDowntime(
+      product.id,
+      startOfDay,
+      endOfCurrentHour
+    );
+    const downtime_min = downtimeSeconds / 60;
+
+    const { total_output, reject_output } = await getTodayOutput(product, today);
+
+    const operating_min = Math.max(0, planned_min - downtime_min);
+    const availability  = planned_min > 0 ? (operating_min / planned_min * 100) : 0;
+    const performance   = (operating_min > 0 && product.cycle_time > 0)
+      ? (product.cycle_time * total_output / (operating_min * 60) * 100) : 0;
+    const good_count    = Math.max(0, total_output - reject_output);
+    const quality       = total_output > 0 ? (good_count / total_output * 100) : 0;
+    const oee           = (availability * performance * quality / 10000);
+
+    await OeeHourlySnapshot.upsert({
+      product_id:    product.id,
+      snapshot_hour: endOfCurrentHour,
+      oee,
+      availability,
+      performance,
+      quality,
+      total_output,
+      total_reject:  reject_output,
+      downtime_min,
+      planned_min,
+      updated_at:    new Date()
+    }, { conflictFields: ['product_id', 'snapshot_hour'] });
+
+    results.push({
+      product_id:    product.id,
+      product_name:  product.name,
+      snapshot_hour: endOfCurrentHour,
+      oee:           Math.round(oee * 100) / 100,
+      availability:  Math.round(availability * 100) / 100,
+      performance:   Math.round(performance * 100) / 100,
+      quality:       Math.round(quality * 100) / 100,
+      total_output,
+      reject_output,
+      planned_min,
+      downtime_min:  Math.round(downtime_min * 100) / 100
+    });
+  }
+
+  return results;
+};
+
+exports.getIntradayHistory = async (productId, dateStr) => {
+  const localNow = new Date();
+  const date = dateStr || [
+    localNow.getFullYear(),
+    String(localNow.getMonth() + 1).padStart(2, '0'),
+    String(localNow.getDate()).padStart(2, '0')
+  ].join('-');
+
+  const rows = await OeeHourlySnapshot.findAll({
+    where: {
+      product_id:    productId,
+      snapshot_hour: { [Op.between]: [new Date(`${date}T00:00:00`), new Date(`${date}T23:59:59`)] }
+    },
+    attributes: ['snapshot_hour', 'oee', 'availability', 'performance', 'quality',
+                 'total_output', 'total_reject', 'planned_min', 'downtime_min'],
+    order: [['snapshot_hour', 'ASC']]
+  });
+
+  return rows.map(r => ({
+    hour:         r.snapshot_hour,
+    oee:          parseFloat(r.oee),
+    availability: parseFloat(r.availability),
+    performance:  parseFloat(r.performance),
+    quality:      parseFloat(r.quality),
+    total_output: r.total_output,
+    total_reject: r.total_reject,
+    planned_min:  parseFloat(r.planned_min),
+    downtime_min: parseFloat(r.downtime_min)
+  }));
+};
+
+exports.getSnapshotHistory = async (productId, days) => {
+  const period = days === 30 ? 30 : 7;
+
+  const localNow = new Date();
+  const dates = [];
+  for (let i = period - 1; i >= 0; i--) {
+    const d = new Date(localNow);
+    d.setDate(d.getDate() - i);
+    dates.push([
+      d.getFullYear(),
+      String(d.getMonth() + 1).padStart(2, '0'),
+      String(d.getDate()).padStart(2, '0')
+    ].join('-'));
+  }
+
+  const startDate = dates[0];
+  const endDate   = dates[dates.length - 1];
+
+  const rows = await OeeDailySnapshot.findAll({
+    where: {
+      product_id:    productId,
+      snapshot_date: { [Op.between]: [startDate, endDate] }
+    },
+    attributes: ['snapshot_date', 'oee', 'availability', 'performance', 'quality'],
+    order: [['snapshot_date', 'ASC']]
+  });
+
+  const rowMap = {};
+  rows.forEach(r => { rowMap[r.snapshot_date] = r; });
+
+  return dates.map(date => {
+    const row = rowMap[date];
+    if (!row) return { date, oee: null, availability: null, performance: null, quality: null };
+    return {
+      date,
+      oee:          parseFloat(row.oee),
+      availability: parseFloat(row.availability),
+      performance:  parseFloat(row.performance),
+      quality:      parseFloat(row.quality)
+    };
+  });
+};
 </file>
 
 <file path="src/services/email.service.js">
@@ -5750,22 +7331,6 @@ exports.findByAddressIds = (addressIds) =>
   DeviceNumberConfig.findAll({ where: { address_id: addressIds }, order: [['id', 'ASC']] });
 </file>
 
-<file path="routes/deviceAlarm.route.js">
-'use strict';
-
-const router = require('express').Router();
-const ctrl = require('../controllers/deviceAlarm.controller');
-
-router.post('/addresses/:addressId/alarms', ctrl.create);
-router.put('/alarms/:alarmId', ctrl.update);
-router.delete('/alarms/:alarmId', ctrl.delete);
-router.get('/addresses/:addressId/alarms', ctrl.getByAddressId);
-router.get('/alarms/:alarmId', ctrl.getById);
-router.get('/events/all', ctrl.getHistoryAll);
-
-module.exports = router;
-</file>
-
 <file path="routes/deviceLevelConfig.route.js">
 const express = require('express');
 const router = express.Router();
@@ -5901,6 +7466,143 @@ exports.updateCard = async (cardId, userId, payload) => {
 };
 </file>
 
+<file path="services/deviceNumberConfig.service.js">
+const repo = require('../repositories/deviceNumberConfig.repo');
+const addressRepo = require('../repositories/deviceAddress.repo');
+
+/* ===========================================
+   NUMBER CONFIG APIs
+   Source: src/components/setting/DeviceForm.vue
+   =========================================== */
+
+// POST /api/addresses/:addressId/number-config - Save numeric display config
+exports.create = async (addressId, payload) => {
+  const address = await addressRepo.findById(addressId);
+  if (!address) throw new Error('Address not found');
+
+  const allowedTypes = ['number', 'number_gauge'];
+  if (!allowedTypes.includes(address.data_type)) {
+    throw new Error(`This address type (${address.data_type}) does not support number configuration`);
+  }
+
+  const exists = await repo.findByAddressId(addressId);
+  if (exists) throw new Error('Number config already exists for this address');
+
+  return repo.create({
+    address_id: addressId,
+    decimal_places: payload.decimal_places ?? 0,
+    scale: payload.scale ?? 1,
+    offset: payload.offset ?? 0,
+    min_value: payload.min_value,
+    max_value: payload.max_value,
+    unit: payload.unit
+  });
+};
+
+// PUT /api/addresses/:addressId/number-config - Update numeric display config
+exports.update = async (addressId, payload) => {
+  const address = await addressRepo.findById(addressId);
+  if (!address) throw new Error('Address not found');
+
+  const allowedTypes = ['number', 'number_gauge'];
+  if (!allowedTypes.includes(address.data_type)) {
+    throw new Error(`This address type (${address.data_type}) does not support number configuration`);
+  }
+
+  const existing = await repo.findByAddressId(addressId);
+  if (!existing) throw new Error('Number config not found for this address');
+
+  const [_, [updated]] = await repo.update(existing.id, {
+    decimal_places: payload.decimal_places ?? existing.decimal_places,
+    scale: payload.scale ?? existing.scale,
+    offset: payload.offset ?? existing.offset,
+    min_value: payload.min_value !== undefined ? payload.min_value : existing.min_value,
+    max_value: payload.max_value !== undefined ? payload.max_value : existing.max_value,
+    unit: payload.unit !== undefined ? payload.unit : existing.unit
+  });
+
+  return updated;
+};
+
+// GET /api/addresses/:addressId/number-config - Get numeric display config
+exports.getByAddressId = async (addressId) => {
+  const config = await repo.findByAddressId(addressId);
+  if (!config) return null;
+  return config;
+};
+</file>
+
+<file path="models/device_log.js">
+module.exports = (sequelize, DataTypes) => {
+  const DeviceLog = sequelize.define('DeviceLog', {
+    // Raw value (Float supports both M coil and D register)
+    value: {
+      type: DataTypes.FLOAT,
+      allowNull: true
+    },
+
+    // Connection quality: 1=Good, 0=Bad/Link Down
+    status: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 1,
+      comment: '1=Good, 0=Bad/Link Down'
+    },
+
+    // Millisecond-precision timestamp
+    created_at: {
+      type: DataTypes.DATE(3),
+      defaultValue: DataTypes.NOW,
+      field: 'created_at'
+    }
+  }, {
+    tableName: 'device_logs',
+    underscored: true,
+    timestamps: false,
+    indexes: [
+      { fields: ['address_id', 'created_at'] }
+    ]
+  });
+
+  DeviceLog.associate = (models) => {
+    DeviceLog.belongsTo(models.DeviceAddress, { foreignKey: 'address_id', as: 'address' });
+  };
+
+  return DeviceLog;
+};
+</file>
+
+<file path="repositories/deviceLog.repo.js">
+const { DeviceLog, DeviceLevelConfig } = require('../models');
+
+// Get level configs for a given address (used for chart mapping)
+exports.getDeviceLevels = async (address_id) => {
+  return DeviceLevelConfig.findAll({
+    where: { address_id },
+    order: [['level_index', 'ASC']],
+    raw: true
+  });
+};
+</file>
+
+<file path="routes/deviceAlarm.route.js">
+'use strict';
+
+const router = require('express').Router();
+const ctrl = require('../controllers/deviceAlarm.controller');
+
+router.post('/addresses/:addressId/alarms', ctrl.create);
+router.put('/alarms/:alarmId', ctrl.update);
+router.delete('/alarms/:alarmId', ctrl.delete);
+router.get('/addresses/:addressId/alarms', ctrl.getByAddressId);
+router.get('/alarms/:alarmId', ctrl.getById);
+router.get('/alarms/events/history', ctrl.getAlarmEventHistory);
+router.get('/alarms/events/:device_id/history', ctrl.getAlarmEventHistoryByDevice);
+router.get('/events/all', ctrl.getHistoryAll);
+
+module.exports = router;
+</file>
+
 <file path="services/deviceAlarm.service.js">
 'use strict';
 
@@ -5987,71 +7689,81 @@ exports.getById = async (alarmId) => {
 exports.getAllHistory = async (start, end) => {
   return await repo.findAllEvents(start, end);
 };
-</file>
 
-<file path="services/deviceNumberConfig.service.js">
-const repo = require('../repositories/deviceNumberConfig.repo');
-const addressRepo = require('../repositories/deviceAddress.repo');
-
-/* ===========================================
-   NUMBER CONFIG APIs
-   Source: src/components/setting/DeviceForm.vue
-   =========================================== */
-
-// POST /api/addresses/:addressId/number-config - Save numeric display config
-exports.create = async (addressId, payload) => {
-  const address = await addressRepo.findById(addressId);
-  if (!address) throw new Error('Address not found');
-
-  const allowedTypes = ['number', 'number_gauge'];
-  if (!allowedTypes.includes(address.data_type)) {
-    throw new Error(`This address type (${address.data_type}) does not support number configuration`);
-  }
-
-  const exists = await repo.findByAddressId(addressId);
-  if (exists) throw new Error('Number config already exists for this address');
-
-  return repo.create({
-    address_id: addressId,
-    decimal_places: payload.decimal_places ?? 0,
-    scale: payload.scale ?? 1,
-    offset: payload.offset ?? 0,
-    min_value: payload.min_value,
-    max_value: payload.max_value,
-    unit: payload.unit
-  });
+const toLocalDate = (d) => {
+  const dt = new Date(d);
+  return [
+    dt.getFullYear(),
+    String(dt.getMonth() + 1).padStart(2, '0'),
+    String(dt.getDate()).padStart(2, '0')
+  ].join('-');
 };
 
-// PUT /api/addresses/:addressId/number-config - Update numeric display config
-exports.update = async (addressId, payload) => {
-  const address = await addressRepo.findById(addressId);
-  if (!address) throw new Error('Address not found');
-
-  const allowedTypes = ['number', 'number_gauge'];
-  if (!allowedTypes.includes(address.data_type)) {
-    throw new Error(`This address type (${address.data_type}) does not support number configuration`);
+const buildDateList = (days) => {
+  const localNow = new Date();
+  const dates = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(localNow);
+    d.setDate(d.getDate() - i);
+    dates.push(toLocalDate(d));
   }
-
-  const existing = await repo.findByAddressId(addressId);
-  if (!existing) throw new Error('Number config not found for this address');
-
-  const [_, [updated]] = await repo.update(existing.id, {
-    decimal_places: payload.decimal_places ?? existing.decimal_places,
-    scale: payload.scale ?? existing.scale,
-    offset: payload.offset ?? existing.offset,
-    min_value: payload.min_value !== undefined ? payload.min_value : existing.min_value,
-    max_value: payload.max_value !== undefined ? payload.max_value : existing.max_value,
-    unit: payload.unit !== undefined ? payload.unit : existing.unit
-  });
-
-  return updated;
+  return dates;
 };
 
-// GET /api/addresses/:addressId/number-config - Get numeric display config
-exports.getByAddressId = async (addressId) => {
-  const config = await repo.findByAddressId(addressId);
-  if (!config) return null;
-  return config;
+const aggregateEventsByDay = (events, dates) => {
+  const dayMap = {};
+  dates.forEach(d => { dayMap[d] = { alarm_count: 0, total_downtime_sec: 0 }; });
+
+  const now = new Date();
+
+  // แยก triggers / recoveries ตาม alarm_rule_id (ตรงกับ frontend ที่ใช้ alarm_rule_id ?? address_id)
+  const ruleMap = {};
+  events.forEach(e => {
+    const key = e.alarm_rule_id;
+    if (!ruleMap[key]) ruleMap[key] = { triggers: [], recoveries: [] };
+    if (e.event_type === 'TRIGGER')  ruleMap[key].triggers.push(e);
+    else if (e.event_type === 'RECOVER') ruleMap[key].recoveries.push(e);
+  });
+
+  Object.values(ruleMap).forEach(({ triggers, recoveries }) => {
+    triggers.forEach(trg => {
+      const date = toLocalDate(trg.created_at);
+      if (!dayMap[date]) return;
+
+      dayMap[date].alarm_count++;
+
+      const triggerTime = new Date(trg.created_at);
+
+      // หา RECOVER แรกที่อยู่หลัง trigger (เหมือน frontend)
+      const rec = recoveries
+        .filter(r => new Date(r.created_at) > triggerTime)
+        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))[0];
+
+      // unresolved → นับถึง now | Math.floor เหมือน frontend duration_sec
+      const endTime = rec ? new Date(rec.created_at) : now;
+      dayMap[date].total_downtime_sec += Math.floor((endTime - triggerTime) / 1000);
+    });
+  });
+
+  return dates.map(date => ({
+    date,
+    total_downtime_sec: dayMap[date].total_downtime_sec,
+    alarm_count: dayMap[date].alarm_count
+  }));
+};
+
+// GET /api/alarms/events/history?days — รวมทุก device
+exports.getAlarmEventHistory = async (days) => {
+  const dates = buildDateList(days);
+  const events = await repo.findEventsInRange(dates[0], dates[dates.length - 1]);
+  return aggregateEventsByDay(events, dates);
+};
+
+// GET /api/alarms/events/:device_id/history?days — แยกตาม device
+exports.getAlarmEventHistoryByDevice = async (deviceId, days) => {
+  const dates = buildDateList(days);
+  const events = await repo.findEventsByDeviceId(deviceId, dates[0], dates[dates.length - 1]);
+  return aggregateEventsByDay(events, dates);
 };
 </file>
 
@@ -6070,7 +7782,7 @@ exports.getById = async (id) => {
 };
 
 exports.create = async (payload) => {
-  const { name, image_path, cycle_time, plc_address_output, plc_address_active, total_output, plc_address_complete , plc_address_reject} = payload;
+  const { name, image_path, cycle_time, plc_address_output, plc_address_active, total_output, plc_address_complete, plc_address_reject, target_oee, target_output } = payload;
 
   if (!name) {
     throw new Error('name is required');
@@ -6087,7 +7799,9 @@ exports.create = async (payload) => {
     plc_address_active,
     total_output,
     plc_address_complete,
-    plc_address_reject
+    plc_address_reject,
+    target_oee,
+    target_output
   });
 
   return product;
@@ -6097,7 +7811,7 @@ exports.update = async (id, payload) => {
   const product = await repo.findById(id);
   if (!product) throw { status: 404, message: 'ไม่พบสินค้านี้' };
 
-  const { name, image_path, cycle_time, plc_address_output, plc_address_active, total_output, plc_address_complete, plc_address_reject } = payload;
+  const { name, image_path, cycle_time, plc_address_output, plc_address_active, total_output, plc_address_complete, plc_address_reject, target_oee, target_output } = payload;
 
   if (name && name !== product.name) {
     const exists = await repo.findByName(name);
@@ -6113,6 +7827,8 @@ exports.update = async (id, payload) => {
   if (total_output !== undefined) updateData.total_output = total_output;
   if (plc_address_complete !== undefined) updateData.plc_address_complete = plc_address_complete;
   if (plc_address_reject !== undefined) updateData.plc_address_reject = plc_address_reject;
+  if (target_oee !== undefined) updateData.target_oee = target_oee;
+  if (target_output !== undefined) updateData.target_output = target_output;
 
   await repo.update(id, updateData);
   return await repo.findById(id);
@@ -6160,222 +7876,6 @@ exports.getPlcAddresses = async () => {
     plc_address_complete: products[0].plc_address_complete,
     plc_address_reject: products[0].plc_address_reject
   };
-};
-</file>
-
-<file path="models/device_log.js">
-module.exports = (sequelize, DataTypes) => {
-  const DeviceLog = sequelize.define('DeviceLog', {
-    // Raw value (Float supports both M coil and D register)
-    value: {
-      type: DataTypes.FLOAT,
-      allowNull: true
-    },
-
-    // Connection quality: 1=Good, 0=Bad/Link Down
-    status: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-      defaultValue: 1,
-      comment: '1=Good, 0=Bad/Link Down'
-    },
-
-    // Millisecond-precision timestamp
-    created_at: {
-      type: DataTypes.DATE(3),
-      defaultValue: DataTypes.NOW,
-      field: 'created_at'
-    }
-  }, {
-    tableName: 'device_logs',
-    underscored: true,
-    timestamps: false,
-    indexes: [
-      { fields: ['address_id', 'created_at'] }
-    ]
-  });
-
-  DeviceLog.associate = (models) => {
-    DeviceLog.belongsTo(models.DeviceAddress, { foreignKey: 'address_id', as: 'address' });
-  };
-
-  return DeviceLog;
-};
-</file>
-
-<file path="models/product.js">
-'use strict';
-
-const { Model } = require('sequelize');
-
-module.exports = (sequelize, DataTypes) => {
-  class Product extends Model {
-    static associate(models) {
-      Product.hasMany(models.ProductLog, { foreignKey: 'product_id', as: 'productLogs' });
-      Product.hasMany(models.OeeDailySnapshot, { foreignKey: 'product_id', as: 'oeSnapshots' });
-    }
-  }
-
-  Product.init({
-    id: {
-      type: DataTypes.INTEGER,
-      autoIncrement: true,
-      primaryKey: true,
-      allowNull: false
-    },
-    name: {
-      type: DataTypes.STRING(255),
-      allowNull: false
-    },
-    image_path: {
-      type: DataTypes.TEXT,
-      allowNull: true
-    },
-    cycle_time: {
-      type: DataTypes.FLOAT,
-      allowNull: true,
-      comment: 'Cycle time in seconds'
-    },
-    plc_address_output: {
-      type: DataTypes.STRING(100),
-      allowNull: true,
-      comment: 'PLC Address for count signal (ON/OFF)'
-    },
-    plc_address_active: {
-      type: DataTypes.STRING(100),
-      allowNull: true,
-      comment: 'PLC Address for running status signal'
-    },
-    total_output: {
-      type: DataTypes.INTEGER,
-      allowNull: true,
-      defaultValue: 0,
-      comment: 'Total output count'
-    },
-    plc_address_complete: {
-      type: DataTypes.STRING(100),
-      allowNull: true,
-      comment: 'PLC Address for complete signal'
-    },
-    plc_address_reject: {
-      type: DataTypes.STRING(100),
-      allowNull: true,
-      comment: 'PLC Address for reject signal'
-    },
-    reject_output: {
-      type: DataTypes.INTEGER,
-      allowNull: true,
-      defaultValue: 0,
-      comment: 'Total reject count'
-    },
-    created_at: {
-      type: DataTypes.DATE,
-      allowNull: false,
-      defaultValue: DataTypes.NOW
-    },
-    updated_at: {
-      type: DataTypes.DATE,
-      allowNull: false,
-      defaultValue: DataTypes.NOW
-    }
-  }, {
-    sequelize,
-    modelName: 'Product',
-    tableName: 'products',
-    timestamps: false
-  });
-
-  return Product;
-};
-</file>
-
-<file path="repositories/deviceLog.repo.js">
-const { DeviceLog, DeviceLevelConfig } = require('../models');
-
-// Get level configs for a given address (used for chart mapping)
-exports.getDeviceLevels = async (address_id) => {
-  return DeviceLevelConfig.findAll({
-    where: { address_id },
-    order: [['level_index', 'ASC']],
-    raw: true
-  });
-};
-</file>
-
-<file path="controllers/deviceAlarm.controller.js">
-'use strict';
-
-const service = require('../services/deviceAlarm.service');
-
-// POST /api/addresses/:addressId/alarms
-exports.create = async (req, res) => {
-  try {
-    const data = await service.createAlarm(req.params.addressId, req.body);
-    res.json(data);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
-};
-
-// PUT /api/alarms/:alarmId
-exports.update = async (req, res) => {
-  try {
-    const data = await service.updateAlarm(req.params.alarmId, req.body);
-    res.json(data);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
-};
-
-// DELETE /api/alarms/:alarmId
-exports.delete = async (req, res) => {
-  try {
-    await service.deleteAlarm(req.params.alarmId);
-    res.json({ message: 'Alarm deactivated successfully' });
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
-};
-
-// GET /api/addresses/:addressId/alarms
-exports.getByAddressId = async (req, res) => {
-  try {
-    const data = await service.getByAddressId(req.params.addressId);
-    res.json(data);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
-};
-
-// GET /api/alarms/:alarmId
-exports.getById = async (req, res) => {
-  try {
-    const data = await service.getById(req.params.alarmId);
-    res.json(data);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
-};
-
-// GET /api/events/all?start&end
-exports.getHistoryAll = async (req, res) => {
-  try {
-    const { start, end } = req.query;
-    const events = await service.getAllHistory(start, end);
-    const formatEvent = (events) => events.map(e => ({
-      id: e.id,
-      value: e.value,
-      event_type: e.event_type,
-      created_at: e.created_at,
-      rule: e.rule,
-      device: e.device,
-      room_name: e.device?.room?.name,
-      address_id: e.address_id
-    }));
-    res.json(formatEvent(events));
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
 };
 </file>
 
@@ -6571,6 +8071,104 @@ CLOUDINARY_API_KEY=358619918594822
 CLOUDINARY_API_SECRET=EO_bgVmoYzrwFGhvAbrtxpOw7aY
 </file>
 
+<file path="models/product.js">
+'use strict';
+
+const { Model } = require('sequelize');
+
+module.exports = (sequelize, DataTypes) => {
+  class Product extends Model {
+    static associate(models) {
+      Product.hasMany(models.ProductLog, { foreignKey: 'product_id', as: 'productLogs' });
+      Product.hasMany(models.OeeDailySnapshot, { foreignKey: 'product_id', as: 'oeSnapshots' });
+    }
+  }
+
+  Product.init({
+    id: {
+      type: DataTypes.INTEGER,
+      autoIncrement: true,
+      primaryKey: true,
+      allowNull: false
+    },
+    name: {
+      type: DataTypes.STRING(255),
+      allowNull: false
+    },
+    image_path: {
+      type: DataTypes.TEXT,
+      allowNull: true
+    },
+    cycle_time: {
+      type: DataTypes.FLOAT,
+      allowNull: true,
+      comment: 'Cycle time in seconds'
+    },
+    plc_address_output: {
+      type: DataTypes.STRING(100),
+      allowNull: true,
+      comment: 'PLC Address for count signal (ON/OFF)'
+    },
+    plc_address_active: {
+      type: DataTypes.STRING(100),
+      allowNull: true,
+      comment: 'PLC Address for running status signal'
+    },
+    total_output: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: 0,
+      comment: 'Total output count'
+    },
+    plc_address_complete: {
+      type: DataTypes.STRING(100),
+      allowNull: true,
+      comment: 'PLC Address for complete signal'
+    },
+    plc_address_reject: {
+      type: DataTypes.STRING(100),
+      allowNull: true,
+      comment: 'PLC Address for reject signal'
+    },
+    reject_output: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: 0,
+      comment: 'Total reject count'
+    },
+    target_oee: {
+      type: DataTypes.FLOAT,
+      allowNull: true,
+      defaultValue: null,
+      comment: 'Target OEE percentage (0-100)'
+    },
+    target_output: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: null,
+      comment: 'Target output count per shift/day'
+    },
+    created_at: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW
+    },
+    updated_at: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW
+    }
+  }, {
+    sequelize,
+    modelName: 'Product',
+    tableName: 'products',
+    timestamps: false
+  });
+
+  return Product;
+};
+</file>
+
 <file path="services/deviceLevelConfig.service.js">
 const repo = require('../repositories/deviceLevelConfig.repo');
 const addressRepo = require('../repositories/deviceAddress.repo');
@@ -6619,47 +8217,116 @@ function validateLevel(p, isUpdate = false) {
 }
 </file>
 
-<file path="repositories/deviceAlarm.repo.js">
+<file path="controllers/deviceAlarm.controller.js">
 'use strict';
 
-const { DeviceAlarmRule, DeviceAlarmEvent, Device, DeviceAddress , Room } = require('../models');
-const { Op } = require('sequelize');
+const service = require('../services/deviceAlarm.service');
 
-exports.createRule = async (data) => DeviceAlarmRule.create(data);
-
-// Update alarm rule
-exports.updateRule = async (id, data) =>
-  DeviceAlarmRule.update(data, { where: { id }, returning: true });
-
-// Find alarm rule by ID
-exports.findById = (id) => DeviceAlarmRule.findByPk(id);
-
-// Find all alarm rules by address ID (only active)
-exports.findByAddressId = (addressId) =>
-  DeviceAlarmRule.findAll({ where: { address_id: addressId, is_active: true } });
-
-// Soft delete alarm rule - set is_active to false
-exports.deleteRule = async (id) =>
-  DeviceAlarmRule.update({ is_active: false }, { where: { id } });
-
-// Build date range condition (full day)
-const getDateRange = (startDate, endDate) => {
-  const start = new Date(startDate);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(endDate);
-  end.setHours(23, 59, 59, 999);
-  return { [Op.between]: [start, end] };
+// POST /api/addresses/:addressId/alarms
+exports.create = async (req, res) => {
+  try {
+    const data = await service.createAlarm(req.params.addressId, req.body);
+    res.json(data);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
 };
 
-exports.findAllEvents = (startDate, endDate) => {
-  return DeviceAlarmEvent.findAll({
-    where: { created_at: getDateRange(startDate, endDate) },
-    include: [
-      { model: DeviceAlarmRule, as: 'rule', attributes: ['name', 'condition_type', 'min_value', 'max_value'] },
-      { model: Device, as: 'device', attributes: ['name'] , include: [{ model: Room, as: 'room', attributes: ['name'] }]}
-    ],
-    order: [['created_at', 'DESC']]
-  });
+// PUT /api/alarms/:alarmId
+exports.update = async (req, res) => {
+  try {
+    const data = await service.updateAlarm(req.params.alarmId, req.body);
+    res.json(data);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+// DELETE /api/alarms/:alarmId
+exports.delete = async (req, res) => {
+  try {
+    await service.deleteAlarm(req.params.alarmId);
+    res.json({ message: 'Alarm deactivated successfully' });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+// GET /api/addresses/:addressId/alarms
+exports.getByAddressId = async (req, res) => {
+  try {
+    const data = await service.getByAddressId(req.params.addressId);
+    res.json(data);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+// GET /api/alarms/:alarmId
+exports.getById = async (req, res) => {
+  try {
+    const data = await service.getById(req.params.alarmId);
+    res.json(data);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+// GET /api/alarms/events/history?days=7
+exports.getAlarmEventHistory = async (req, res) => {
+  try {
+    const days = parseInt(req.query.days, 10) || 7;
+
+    if (days !== 7 && days !== 30) {
+      return res.status(400).json({ success: false, message: 'days ต้องเป็น 7 หรือ 30' });
+    }
+
+    const data = await service.getAlarmEventHistory(days);
+    res.json({ success: true, days, data });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// GET /api/alarms/events/:device_id/history?days=7
+exports.getAlarmEventHistoryByDevice = async (req, res) => {
+  try {
+    const deviceId = parseInt(req.params.device_id, 10);
+    const days     = parseInt(req.query.days, 10) || 7;
+
+    if (isNaN(deviceId)) {
+      return res.status(400).json({ success: false, message: 'device_id ไม่ถูกต้อง' });
+    }
+    if (days !== 7 && days !== 30) {
+      return res.status(400).json({ success: false, message: 'days ต้องเป็น 7 หรือ 30' });
+    }
+
+    const data = await service.getAlarmEventHistoryByDevice(deviceId, days);
+    res.json({ success: true, device_id: deviceId, days, data });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// GET /api/events/all?start&end
+exports.getHistoryAll = async (req, res) => {
+  try {
+    const { start, end } = req.query;
+    const events = await service.getAllHistory(start, end);
+    const formatEvent = (events) => events.map(e => ({
+      id: e.id,
+      value: e.value,
+      event_type: e.event_type,
+      created_at: e.created_at,
+      rule: e.rule,
+      device: e.device,
+      room_name: e.device?.room?.name,
+      address_id: e.address_id
+    }));
+    res.json(formatEvent(events));
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 };
 </file>
 
@@ -6823,6 +8490,69 @@ module.exports = (sequelize, DataTypes) => {
 };
 </file>
 
+<file path="repositories/deviceAlarm.repo.js">
+'use strict';
+
+const { DeviceAlarmRule, DeviceAlarmEvent, Device, DeviceAddress , Room } = require('../models');
+const { Op } = require('sequelize');
+
+exports.createRule = async (data) => DeviceAlarmRule.create(data);
+
+// Update alarm rule
+exports.updateRule = async (id, data) =>
+  DeviceAlarmRule.update(data, { where: { id }, returning: true });
+
+// Find alarm rule by ID
+exports.findById = (id) => DeviceAlarmRule.findByPk(id);
+
+// Find all alarm rules by address ID (only active)
+exports.findByAddressId = (addressId) =>
+  DeviceAlarmRule.findAll({ where: { address_id: addressId, is_active: true } });
+
+// Soft delete alarm rule - set is_active to false
+exports.deleteRule = async (id) =>
+  DeviceAlarmRule.update({ is_active: false }, { where: { id } });
+
+// Build date range condition (full day)
+const getDateRange = (startDate, endDate) => {
+  const start = new Date(startDate);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(endDate);
+  end.setHours(23, 59, 59, 999);
+  return { [Op.between]: [start, end] };
+};
+
+exports.findAllEvents = (startDate, endDate) => {
+  return DeviceAlarmEvent.findAll({
+    where: { created_at: getDateRange(startDate, endDate) },
+    include: [
+      { model: DeviceAlarmRule, as: 'rule', attributes: ['name', 'condition_type', 'min_value', 'max_value'] },
+      { model: Device, as: 'device', attributes: ['name'] , include: [{ model: Room, as: 'room', attributes: ['name'] }]}
+    ],
+    order: [['created_at', 'DESC']]
+  });
+};
+
+exports.findEventsInRange = (startDate, endDate) => {
+  return DeviceAlarmEvent.findAll({
+    where: { created_at: getDateRange(startDate, endDate) },
+    attributes: ['id', 'alarm_rule_id', 'event_type', 'created_at'],
+    order: [['alarm_rule_id', 'ASC'], ['created_at', 'ASC']]
+  });
+};
+
+exports.findEventsByDeviceId = (deviceId, startDate, endDate) => {
+  return DeviceAlarmEvent.findAll({
+    where: {
+      device_id: deviceId,
+      created_at: getDateRange(startDate, endDate)
+    },
+    attributes: ['id', 'alarm_rule_id', 'event_type', 'created_at'],
+    order: [['alarm_rule_id', 'ASC'], ['created_at', 'ASC']]
+  });
+};
+</file>
+
 <file path="routes/device.route.js">
 const express = require('express');
 const router = express.Router();
@@ -6837,24 +8567,6 @@ router.put('/:id', controller.updateDevice);
 router.delete('/:id', controller.deleteDevice);
 
 module.exports = router;
-</file>
-
-<file path="src/server.js">
-process.env.NODE_ENV = process.env.NODE_ENV || 'development';
-
-const app = require('./app');
-
-const { startPollWorker } = require('../plcPoller');
-const { startDailyOEEJob } = require('../jobs/dailyOEEJob');
-
-const PORT = process.env.PORT || 3001;
-
-app.listen(PORT, async () => {
-  console.log(`Server running on port ${PORT}`);
-
-   await startPollWorker();
-   startDailyOEEJob();
-});
 </file>
 
 <file path="repositories/device.repo.js">
@@ -7026,38 +8738,24 @@ exports.findByAddressAndDate = async ({ address_id, start, end }) => {
 };
 </file>
 
-<file path="package.json">
-{
-  "devDependencies": {
-    "cross-env": "^10.1.0",
-    "nodemon": "^3.1.11",
-    "sequelize-cli": "^6.6.5"
-  },
-  "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "cloudinary": "^2.9.0",
-    "cors": "^2.8.5",
-    "dotenv": "^17.2.3",
-    "express": "^5.2.1",
-    "jsmodbus": "^4.0.10",
-    "jsonwebtoken": "^9.0.3",
-    "modbus-serial": "^8.0.23",
-    "multer": "^2.1.1",
-    "nodemailer": "^7.0.12",
-    "nodes7": "^0.3.18",
-    "pg": "^8.16.3",
-    "pg-hstore": "^2.3.4",
-    "sequelize": "^6.37.7"
-  },
-  "scripts": {
-    "migrate:dev": "cross-env NODE_ENV=development sequelize-cli db:migrate",
-    "migrate:prod": "cross-env NODE_ENV=production sequelize-cli db:migrate",
-    "dev": "cross-env NODE_ENV=development nodemon src/server.js",
-    "prod": "NODE_ENV=production node src/server.js",
-    "seed:dev": "cross-env NODE_ENV=development sequelize-cli db:seed:all",
-    "undo:dev": "cross-env NODE_ENV=development sequelize-cli db:migrate:undo"
-  }
-}
+<file path="src/server.js">
+process.env.NODE_ENV = process.env.NODE_ENV || 'development';
+
+const app = require('./app');
+
+const { startPollWorker } = require('../plcPoller');
+const { startDailyOEEJob } = require('../jobs/dailyOEEJob');
+const { startHourlyOEEJob } = require('../jobs/hourlyOEEJob');
+
+const PORT = process.env.PORT || 3001;
+
+app.listen(PORT, async () => {
+  console.log(`Server running on port ${PORT}`);
+
+   await startPollWorker();
+   startDailyOEEJob();
+   startHourlyOEEJob();
+});
 </file>
 
 <file path="controllers/workingTime.controller.js">
@@ -7120,6 +8818,41 @@ exports.getCurrentPlannedTime = async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 };
+</file>
+
+<file path="package.json">
+{
+  "devDependencies": {
+    "cross-env": "^10.1.0",
+    "nodemon": "^3.1.11",
+    "sequelize-cli": "^6.6.5"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cloudinary": "^2.9.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "jsmodbus": "^4.0.10",
+    "jsonwebtoken": "^9.0.3",
+    "modbus-serial": "^8.0.23",
+    "multer": "^2.1.1",
+    "node-cron": "^4.2.1",
+    "nodemailer": "^7.0.12",
+    "nodes7": "^0.3.18",
+    "pg": "^8.16.3",
+    "pg-hstore": "^2.3.4",
+    "sequelize": "^6.37.7"
+  },
+  "scripts": {
+    "migrate:dev": "cross-env NODE_ENV=development sequelize-cli db:migrate",
+    "migrate:prod": "cross-env NODE_ENV=production sequelize-cli db:migrate",
+    "dev": "cross-env NODE_ENV=development nodemon src/server.js",
+    "prod": "NODE_ENV=production node src/server.js",
+    "seed:dev": "cross-env NODE_ENV=development sequelize-cli db:seed:all",
+    "undo:dev": "cross-env NODE_ENV=development sequelize-cli db:migrate:undo"
+  }
+}
 </file>
 
 <file path="plcPoller.js">
@@ -7604,35 +9337,6 @@ if (require.main === module) {
 }
 </file>
 
-<file path="src/app.js">
-const express = require('express');
-const app = express();
-const cors = require('cors');
-
-app.use(express.json());
-app.use(cors());
-
-app.use('/api/working-time', require('../routes/workingTime.route'));
-app.use('/api/devices', require('../routes/device.route'));
-app.use('/api', require('../routes/deviceAlarm.route'));
-app.use('/api/plc', require('../routes/plc.route'));
-app.use('/api', require('../routes/deviceNumberConfig.route'));
-app.use('/api', require('../routes/deviceLevelConfig.route'));
-app.use('/api/dashboard', require('../routes/dashboard.routes'));
-app.use('/api/interaction', require('../routes/interactionLayout.route'));
-app.use('/api/device-types', require('../routes/deviceType.route'));
-app.use('/api/rooms', require('../routes/room.route'));
-app.use('/api/products', require('../routes/product.route'));
-app.use('/api/downtime', require('../routes/downtimeLog.route'));
-app.use('/api/downtime-products', require('../routes/downtimeProduct.route'));
-app.use('/api/users', require('../routes/user.route'));
-app.use('/api/auth', require('../routes/auth.route'));
-app.use('/api/data-retention', require('../routes/dataRetention.route'));
-app.use('/api/oee', require('../routes/oee.route'));
-
-module.exports = app;
-</file>
-
 <file path="services/device.service.js">
 const repo = require('../repositories/device.repo');
 const { reloadPolling } = require('../plcPoller');
@@ -8016,6 +9720,36 @@ exports.getChartByAlarm = async (address_id, alarm_time, expand) => {
 
   return result;
 };
+</file>
+
+<file path="src/app.js">
+const express = require('express');
+const app = express();
+const cors = require('cors');
+
+app.use(express.json());
+app.use(cors());
+
+app.use('/api/working-time', require('../routes/workingTime.route'));
+app.use('/api/devices', require('../routes/device.route'));
+app.use('/api', require('../routes/deviceAlarm.route'));
+app.use('/api/plc', require('../routes/plc.route'));
+app.use('/api', require('../routes/deviceNumberConfig.route'));
+app.use('/api', require('../routes/deviceLevelConfig.route'));
+app.use('/api/dashboard', require('../routes/dashboard.routes'));
+app.use('/api/interaction', require('../routes/interactionLayout.route'));
+app.use('/api/device-types', require('../routes/deviceType.route'));
+app.use('/api/rooms', require('../routes/room.route'));
+app.use('/api/products', require('../routes/product.route'));
+app.use('/api/downtime', require('../routes/downtimeLog.route'));
+app.use('/api/downtime-products', require('../routes/downtimeProduct.route'));
+app.use('/api/users', require('../routes/user.route'));
+app.use('/api/auth', require('../routes/auth.route'));
+app.use('/api/settings', require('../routes/settings.route'));
+app.use('/api/data-retention', require('../routes/dataRetention.route'));
+app.use('/api/oee', require('../routes/oee.route'));
+
+module.exports = app;
 </file>
 
 </files>
