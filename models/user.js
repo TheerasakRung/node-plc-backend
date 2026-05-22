@@ -10,6 +10,8 @@ module.exports = (sequelize, DataTypes) => {
       User.hasMany(models.User, { foreignKey: 'created_by', as: 'createdUsers' });
       User.hasMany(models.UserRoom, { foreignKey: 'user_id', as: 'roomAssignments', onDelete: 'CASCADE' });
       User.hasMany(models.UserRoom, { foreignKey: 'assigned_by', as: 'assignedRooms' });
+      User.belongsTo(models.Role, { foreignKey: 'role_id', as: 'customRole' });
+      User.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company' });
     }
   }
 
@@ -34,10 +36,7 @@ module.exports = (sequelize, DataTypes) => {
     },
     role: {
       type: DataTypes.STRING(20),
-      allowNull: false,
-      validate: {
-        isIn: [['super_admin', 'admin', 'operator', 'viewer', 'guest']]
-      }
+      allowNull: false
     },
     is_active: {
       type: DataTypes.BOOLEAN,
@@ -49,6 +48,14 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true
     },
     created_by: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    role_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    company_id: {
       type: DataTypes.INTEGER,
       allowNull: true
     },
