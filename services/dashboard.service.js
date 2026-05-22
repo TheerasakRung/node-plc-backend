@@ -67,13 +67,10 @@ exports.createCard = async (userId, payload) => {
   });
 };
 
-exports.deleteCard = async (cardId, userId) => {
+exports.deleteCard = async (cardId) => {
   const card = await dashboardRepo.findById(cardId);
 
   if (!card) throw new Error('Dashboard card not found');
-
-  // Prevent cross-user deletion
-  if (card.user_id !== userId) throw new Error('Permission denied');
 
   await dashboardRepo.softDelete(cardId);
 };
@@ -87,9 +84,6 @@ exports.updateCard = async (cardId, userId, payload) => {
 
   const card = await dashboardRepo.findById(cardId);
   if (!card) throw { status: 404, message: 'Dashboard card not found' };
-
-  // Prevent cross-user update
-  if (card.user_id !== userId) throw { status: 403, message: 'Permission denied' };
 
   // Validate address_id if provided
   if (address_id) {

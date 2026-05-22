@@ -58,10 +58,10 @@ exports.createCard = async (req, res) => {
 exports.deleteCard = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user?.id || 1;
+    const userId = req.user.id;
 
     // Delete the card
-    await dashboardService.deleteCard(id, userId);
+    await dashboardService.deleteCard(id);
 
     // Reindex all active cards
     await dashboardService.reindexAll(userId);
@@ -76,7 +76,7 @@ exports.deleteCard = async (req, res) => {
 exports.updateCard = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user?.id || 1;
+    const userId = req.user.id;
     const { card_id, selectedDeviceId, selectedAddressId, selectedDisplayType, selectedPosition } = req.body;
 
     // Map frontend field names to backend field names
