@@ -4,11 +4,15 @@ module.exports = {
   async up(queryInterface, Sequelize) {
     await queryInterface.bulkInsert('working_time', [
       {
-        working_days: ['mon','tue','wed','thu','fri'],
-        start_time: '09:00',
-        end_time: '18:00',
-        break_start: '12:00',
-        break_end: '13:00',
+        schedule: JSON.stringify({
+          monday:    { working_hours: [{ start: '09:00', end: '18:00' }], break_times: [{ start: '12:00', end: '13:00' }] },
+          tuesday:   { working_hours: [{ start: '09:00', end: '18:00' }], break_times: [{ start: '12:00', end: '13:00' }] },
+          wednesday: { working_hours: [{ start: '09:00', end: '18:00' }], break_times: [{ start: '12:00', end: '13:00' }] },
+          thursday:  { working_hours: [{ start: '09:00', end: '18:00' }], break_times: [{ start: '12:00', end: '13:00' }] },
+          friday:    { working_hours: [{ start: '09:00', end: '18:00' }], break_times: [{ start: '12:00', end: '13:00' }] },
+          saturday:  { working_hours: [], break_times: [] },
+          sunday:    { working_hours: [], break_times: [] }
+        }),
         created_at: new Date(),
         updated_at: new Date()
       },
