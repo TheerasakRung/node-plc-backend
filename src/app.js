@@ -24,6 +24,7 @@ app.use('/api/products',     require('../routes/product.route'));
 app.use('/api/downtime',     require('../routes/downtimeLog.route'));
 app.use('/api/downtime-products', require('../routes/downtimeProduct.route'));
 app.use('/api/users',        require('../routes/user.route'));
+app.use('/api/employees',    require('../routes/employee.route'));
 app.use('/api/data-retention', require('../routes/dataRetention.route'));
 
 // 4a — Settings: checkTab('setting')
