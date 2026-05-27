@@ -26,7 +26,7 @@ module.exports = {
       timeout: 30000
     }
   },
-  docker: {
+  dock: {
     username: process.env.DB_USER,
     password: process.env.DB_PASS,
     database: process.env.DB_NAME,

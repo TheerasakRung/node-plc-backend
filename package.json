@@ -28,8 +28,8 @@
     "prod": "NODE_ENV=production node src/server.js",
     "seed:dev": "cross-env NODE_ENV=development sequelize-cli db:seed:all",
     "undo:dev": "cross-env NODE_ENV=development sequelize-cli db:migrate:undo",
-    "dev:dock": "cross-env NODE_ENV=docker nodemon src/server.js",
-    "migrate:dock": "cross-env NODE_ENV=docker sequelize-cli db:migrate",
-    "seed:dock": "cross-env NODE_ENV=docker sequelize-cli db:seed:all"
+    "dev:dock": "cross-env NODE_ENV=dock nodemon src/server.js",
+    "migrate:dock": "cross-env NODE_ENV=dock sequelize-cli db:migrate",
+    "seed:dock": "cross-env NODE_ENV=dock sequelize-cli db:seed:all"
   }
 }
