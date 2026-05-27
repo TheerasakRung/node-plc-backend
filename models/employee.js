@@ -6,6 +6,7 @@ module.exports = (sequelize, DataTypes) => {
   class Employee extends Model {
     static associate(models) {
       Employee.hasMany(models.User, { foreignKey: 'employee_id', as: 'users' });
+      Employee.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company' });
     }
   }
 
@@ -45,6 +46,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.BOOLEAN,
       allowNull: false,
       defaultValue: true
+    },
+    company_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false
     },
     created_at: {
       type: DataTypes.DATE,

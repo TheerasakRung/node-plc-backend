@@ -2,16 +2,18 @@
 
 const { Employee, User } = require('../models');
 
-exports.findAll = () => {
-  return Employee.findAll({ order: [['id', 'ASC']] });
+exports.findAll = (companyId) => {
+  return Employee.findAll({ where: { company_id: companyId }, order: [['id', 'ASC']] });
 };
 
-exports.findById = (id) => {
-  return Employee.findByPk(id);
+exports.findById = (id, companyId) => {
+  const where = { id };
+  if (companyId !== undefined) where.company_id = companyId;
+  return Employee.findOne({ where });
 };
 
-exports.findByEmployeeId = (employee_id) => {
-  return Employee.findOne({ where: { employee_id } });
+exports.findByEmployeeId = (employee_id, companyId) => {
+  return Employee.findOne({ where: { employee_id, company_id: companyId } });
 };
 
 exports.create = (data) => {

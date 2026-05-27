@@ -2,6 +2,7 @@ const express = require('express');
 const app = express();
 const cors = require('cors');
 const authMiddleware = require('../middleware/auth.middleware');
+const tenantMiddleware = require('../middleware/tenant.middleware');
 const perm = require('../middleware/permission.middleware');
 
 app.use(express.json());
@@ -12,6 +13,7 @@ app.use('/api/auth', require('../routes/auth.route'));
 
 // ทุก route หลังจากนี้ต้อง login ก่อน
 app.use(authMiddleware.authenticate);
+app.use(tenantMiddleware.injectCompanyId);
 
 app.use('/api/working-time', require('../routes/workingTime.route'));
 app.use('/api/devices',      require('../routes/device.route'));

@@ -4,7 +4,7 @@ const service = require('../services/employee.service');
 
 exports.list = async (req, res) => {
   try {
-    const data = await service.getAll();
+    const data = await service.getAll(req.companyId);
     res.json({ success: true, data });
   } catch (err) {
     console.error(err);
@@ -14,7 +14,7 @@ exports.list = async (req, res) => {
 
 exports.create = async (req, res) => {
   try {
-    const data = await service.create(req.body);
+    const data = await service.create(req.body, req.companyId);
     res.status(201).json({ success: true, data });
   } catch (err) {
     console.error(err);
@@ -24,7 +24,7 @@ exports.create = async (req, res) => {
 
 exports.update = async (req, res) => {
   try {
-    const data = await service.update(req.params.id, req.body);
+    const data = await service.update(req.params.id, req.companyId, req.body);
     res.json({ success: true, data });
   } catch (err) {
     console.error(err);
@@ -34,7 +34,7 @@ exports.update = async (req, res) => {
 
 exports.delete = async (req, res) => {
   try {
-    await service.delete(req.params.id);
+    await service.delete(req.params.id, req.companyId);
     res.json({ success: true, message: 'Employee deleted' });
   } catch (err) {
     console.error(err);

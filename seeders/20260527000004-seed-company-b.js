@@ -5,19 +5,16 @@ module.exports = {
   async up(queryInterface) {
     const now = new Date();
 
-    // ─── Clear ข้อมูลเก่าทั้งหมด (CASCADE จัดการ FK ทั้งหมด) ───
-    await queryInterface.sequelize.query('TRUNCATE TABLE companies CASCADE');
-
-    // ─── 1. Company ────────────────────────────────
+    // ─── 1. Company B ──────────────────────────────
     await queryInterface.bulkInsert('companies', [{
-      name: 'Default Factory',
+      name: 'Company B',
       is_active: true,
       created_at: now,
       updated_at: now
     }]);
 
     const [companies] = await queryInterface.sequelize.query(
-      `SELECT id FROM companies WHERE name = 'Default Factory' LIMIT 1`
+      `SELECT id FROM companies WHERE name = 'Company B' LIMIT 1`
     );
     const companyId = companies[0].id;
 
@@ -67,10 +64,10 @@ module.exports = {
       }))
     );
 
-    // ─── 3. Super Admin User ───────────────────────
+    // ─── 3. Admin User ─────────────────────────────
     await queryInterface.bulkInsert('users', [{
-      email: 'superadmin@example.com',
-      password_hash: bcrypt.hashSync('SuperAdmin123!', 10),
+      email: 'admin@companyb.com',
+      password_hash: bcrypt.hashSync('Admin123!', 10),
       role: 'super_admin',
       role_id: null,
       company_id: companyId,
@@ -94,13 +91,18 @@ module.exports = {
       created_at: now,
       updated_at: now
     }]);
-
   },
 
   async down(queryInterface) {
-    await queryInterface.bulkDelete('user_rooms', null, {});
-    await queryInterface.bulkDelete('users', null, {});
-    await queryInterface.bulkDelete('roles', null, {});
-    await queryInterface.bulkDelete('companies', null, {});
+    const [companies] = await queryInterface.sequelize.query(
+      `SELECT id FROM companies WHERE name = 'Company B' LIMIT 1`
+    );
+    if (!companies.length) return;
+
+    const companyId = companies[0].id;
+
+    await queryInterface.bulkDelete('users', { company_id: companyId }, {});
+    await queryInterface.bulkDelete('roles', { company_id: companyId }, {});
+    await queryInterface.bulkDelete('companies', { id: companyId }, {});
   }
 };
