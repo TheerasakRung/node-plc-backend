@@ -141,7 +141,7 @@ async function startDynamicPolling() {
   try {
     const addresses = await DeviceAddress.findAll({
       include: [
-        { model: Device, as: 'device', where: { company_id: POLLER_COMPANY_ID }, required: true },
+        { model: Device, as: 'device', required: true },
         { model: DeviceNumberConfig, as: 'numberConfig' }
       ]
     });
