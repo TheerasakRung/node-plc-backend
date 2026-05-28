@@ -1,5 +1,7 @@
 const { Device, sequelize, DeviceAddress, DeviceLog, Room, DeviceType, DeviceAlarmRule, DeviceAlarmState } = require('../models');
 const { QueryTypes, Op } = require('sequelize');
+const numberConfigRepo = require('./deviceNumberConfig.repo');
+const levelConfigRepo = require('./deviceLevelConfig.repo');
 
 // List all devices with their addresses
 exports.findAll = async (filter = {}) => {
@@ -127,6 +129,17 @@ exports.update = async (id, data) => {
             data_type: addr.data_type,
             refresh_rate_ms: Math.max(50, Number(addr.refresh_rate_ms) || 50)
           }, { where: { id: addr.id }, transaction: t });
+
+          // Cleanup configs ที่ไม่ compatible กับ data_type ใหม่
+          if (addr.data_type) {
+            const numberTypes = ['number', 'number_gauge'];
+            if (!numberTypes.includes(addr.data_type)) {
+              await numberConfigRepo.removeByAddressId(addr.id);
+            }
+            if (addr.data_type !== 'level') {
+              await levelConfigRepo.removeByAddressId(addr.id);
+            }
+          }
         } else {
           // Create new address
           await DeviceAddress.create({
